@@ -9,13 +9,12 @@ import os
 import random
 import re
 from datetime import datetime
-from typing import Optional
 from enum import Enum
 from urllib.parse import urlparse
 
 import httpx
 from mcp.server.fastmcp import FastMCP
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 # ---------------------------------------------------------------------------
 # Feature flags via env
@@ -65,7 +64,9 @@ BROWSER_PROFILES = [
 ]
 
 
-def _build_headers(profile: dict, referer: str = "https://www.google.com/", same_origin: bool = False) -> dict:
+def _build_headers(
+    profile: dict, referer: str = "https://www.google.com/", same_origin: bool = False
+) -> dict:
     """Monta headers realistas a partir de um perfil de browser."""
     h = {
         "User-Agent": profile["User-Agent"],
@@ -94,9 +95,33 @@ MAX_RETRIES = 4
 WARMUP_PROBABILITY = 0.7  # chance de fazer warm-up homepage antes da busca
 
 ESTADOS = {
-    "ac", "al", "ap", "am", "ba", "ce", "df", "es", "go",
-    "ma", "mt", "ms", "mg", "pa", "pb", "pr", "pe", "pi",
-    "rj", "rn", "rs", "ro", "rr", "sc", "sp", "se", "to",
+    "ac",
+    "al",
+    "ap",
+    "am",
+    "ba",
+    "ce",
+    "df",
+    "es",
+    "go",
+    "ma",
+    "mt",
+    "ms",
+    "mg",
+    "pa",
+    "pb",
+    "pr",
+    "pe",
+    "pi",
+    "rj",
+    "rn",
+    "rs",
+    "ro",
+    "rr",
+    "sc",
+    "sp",
+    "se",
+    "to",
 }
 
 # ---------------------------------------------------------------------------
@@ -109,6 +134,7 @@ mcp = FastMCP("olx_mcp")
 # ---------------------------------------------------------------------------
 # Modelos de entrada
 # ---------------------------------------------------------------------------
+
 
 class OrdenarPor(str, Enum):
     RELEVANCIA = "relevance"
@@ -125,7 +151,7 @@ class BuscarAnunciosInput(BaseModel):
         min_length=1,
         max_length=200,
     )
-    estado: Optional[str] = Field(
+    estado: str | None = Field(
         default=None,
         description=(
             "Sigla do estado brasileiro em minúsculas. Ex: 'sp', 'go', 'rj'. "
@@ -134,7 +160,7 @@ class BuscarAnunciosInput(BaseModel):
         min_length=2,
         max_length=2,
     )
-    categoria: Optional[str] = Field(
+    categoria: str | None = Field(
         default=None,
         description=(
             "Slug de categoria da OLX. Ex: 'informatica-e-acessorios', 'celulares', "
@@ -142,12 +168,12 @@ class BuscarAnunciosInput(BaseModel):
             "Se omitido, busca em todas as categorias."
         ),
     )
-    preco_min: Optional[int] = Field(
+    preco_min: int | None = Field(
         default=None,
         description="Preço mínimo em reais (inteiro). Ex: 500",
         ge=0,
     )
-    preco_max: Optional[int] = Field(
+    preco_max: int | None = Field(
         default=None,
         description="Preço máximo em reais (inteiro). Ex: 3000",
         ge=0,
@@ -181,6 +207,7 @@ class DetalheAnuncioInput(BaseModel):
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _validar_url_olx(url: str) -> str:
     """Garante que a URL é http(s) e aponta para um host *.olx.com.br.
 
@@ -198,9 +225,7 @@ def _validar_url_olx(url: str) -> str:
     if not host:
         raise ValueError("URL sem hostname.")
     if not any(host == h.lstrip(".") or host.endswith(h) for h in ALLOWED_OLX_HOSTS):
-        raise ValueError(
-            f"Hostname não permitido: {host!r}. Apenas *.olx.com.br é aceito."
-        )
+        raise ValueError(f"Hostname não permitido: {host!r}. Apenas *.olx.com.br é aceito.")
     return url
 
 
@@ -244,7 +269,9 @@ def _extract_next_data(html: str) -> dict:
         re.DOTALL,
     )
     if not match:
-        raise ValueError("Não foi possível encontrar dados estruturados na página. A OLX pode estar bloqueando a requisição.")
+        raise ValueError(
+            "Não foi possível encontrar dados estruturados na página. A OLX pode estar bloqueando a requisição."
+        )
     return json.loads(match.group(1))
 
 
@@ -265,7 +292,8 @@ def _format_ad_summary(ad: dict) -> dict:
         "titulo": ad.get("subject") or ad.get("title"),
         "preco": preco_raw,
         "categoria": ad.get("categoryName") or ad.get("category"),
-        "localizacao": ad.get("location") or f"{loc.get('municipality', '')} - {loc.get('uf', '')}".strip(" -"),
+        "localizacao": ad.get("location")
+        or f"{loc.get('municipality', '')} - {loc.get('uf', '')}".strip(" -"),
         "bairro": loc.get("neighbourhood"),
         "data": _format_timestamp(ad["date"]) if isinstance(ad.get("date"), int) else ad.get("date"),
         "url": ad.get("friendlyUrl") or ad.get("url"),
@@ -276,7 +304,7 @@ def _format_ad_summary(ad: dict) -> dict:
     }
 
 
-async def _fetch_with_evasion(url: str, referer_override: Optional[str] = None) -> str:
+async def _fetch_with_evasion(url: str, referer_override: str | None = None) -> str:
     """
     GET com técnicas anti-bloqueio:
     - Rotação de perfil de browser (UA + sec-ch-ua coerentes)
@@ -286,7 +314,7 @@ async def _fetch_with_evasion(url: str, referer_override: Optional[str] = None) 
     - Fallback final: Google Web Cache
     Levanta httpx.HTTPStatusError se todas tentativas falharem.
     """
-    last_exc: Optional[Exception] = None
+    last_exc: Exception | None = None
 
     for attempt in range(MAX_RETRIES):
         profile = random.choice(BROWSER_PROFILES)
@@ -302,13 +330,17 @@ async def _fetch_with_evasion(url: str, referer_override: Optional[str] = None) 
                 # Warm-up: visita homepage para coletar cookies de sessão / anti-bot
                 if attempt == 0 or random.random() < WARMUP_PROBABILITY:
                     try:
-                        warm_headers = _build_headers(profile, referer="https://www.google.com/", same_origin=False)
+                        warm_headers = _build_headers(
+                            profile, referer="https://www.google.com/", same_origin=False
+                        )
                         await client.get(BASE_URL + "/", headers=warm_headers)
                         await asyncio.sleep(random.uniform(0.4, 1.2))
                     except Exception:
                         pass  # warm-up best-effort
 
-                ref = referer_override or (BASE_URL + "/" if random.random() < 0.5 else "https://www.google.com/")
+                ref = referer_override or (
+                    BASE_URL + "/" if random.random() < 0.5 else "https://www.google.com/"
+                )
                 same_origin = ref.startswith(BASE_URL)
                 headers = _build_headers(profile, referer=ref, same_origin=same_origin)
 
@@ -317,7 +349,7 @@ async def _fetch_with_evasion(url: str, referer_override: Optional[str] = None) 
                     last_exc = httpx.HTTPStatusError(
                         f"status {resp.status_code}", request=resp.request, response=resp
                     )
-                    await asyncio.sleep((2 ** attempt) + random.uniform(0.3, 1.5))
+                    await asyncio.sleep((2**attempt) + random.uniform(0.3, 1.5))
                     continue
                 resp.raise_for_status()
                 return resp.text
@@ -325,10 +357,10 @@ async def _fetch_with_evasion(url: str, referer_override: Optional[str] = None) 
             last_exc = e
             if e.response.status_code not in (403, 429, 503):
                 raise
-            await asyncio.sleep((2 ** attempt) + random.uniform(0.3, 1.5))
+            await asyncio.sleep((2**attempt) + random.uniform(0.3, 1.5))
         except (httpx.TimeoutException, httpx.TransportError) as e:
             last_exc = e
-            await asyncio.sleep((2 ** attempt) + random.uniform(0.2, 0.8))
+            await asyncio.sleep((2**attempt) + random.uniform(0.2, 0.8))
 
     if last_exc:
         raise last_exc
@@ -387,7 +419,9 @@ def _parse_search_markdown(md: str, url_busca: str) -> dict:
         loc = None
         for ln in bloco.split("\n"):
             ln = ln.strip()
-            if not ln or ln.startswith(("![", "*", "Slide", "Ir para", "Entrega", "Pague", "Parcelamento", "em até", "Garantia")):
+            if not ln or ln.startswith(
+                ("![", "*", "Slide", "Ir para", "Entrega", "Pague", "Parcelamento", "em até", "Garantia")
+            ):
                 continue
             if re.match(r"^\d+\s+de\s+\w+", ln) or re.match(r"^\d{2}/\d{2}/\d{4}", ln):
                 continue
@@ -402,16 +436,18 @@ def _parse_search_markdown(md: str, url_busca: str) -> dict:
         img_m = re.search(r"!\[[^\]]*\]\((https://img\.olx\.com\.br/[^\)]+)\)", bloco)
         imagem = img_m.group(1) if img_m else None
 
-        anuncios.append({
-            "id": int(ad_id) if ad_id.isdigit() else ad_id,
-            "titulo": titulo,
-            "preco": preco,
-            "localizacao": loc,
-            "data": data,
-            "url": link,
-            "imagem": imagem,
-            "_fonte": "jina_markdown",
-        })
+        anuncios.append(
+            {
+                "id": int(ad_id) if ad_id.isdigit() else ad_id,
+                "titulo": titulo,
+                "preco": preco,
+                "localizacao": loc,
+                "data": data,
+                "url": link,
+                "imagem": imagem,
+                "_fonte": "jina_markdown",
+            }
+        )
 
     return {
         "total": total or len(anuncios),
@@ -444,6 +480,7 @@ def _handle_http_error(e: Exception) -> str:
 # ---------------------------------------------------------------------------
 # Ferramentas
 # ---------------------------------------------------------------------------
+
 
 @mcp.tool(
     name="olx_buscar_anuncios",
@@ -489,7 +526,10 @@ async def olx_buscar_anuncios(params: BuscarAnunciosInput) -> str:
         html = await _fetch_with_evasion(url)
     except Exception:
         if DISABLE_JINA:
-            return json.dumps({"erro": "Erro: acesso negado e fallback Jina desabilitado (OLX_MCP_DISABLE_JINA=1)."}, ensure_ascii=False)
+            return json.dumps(
+                {"erro": "Erro: acesso negado e fallback Jina desabilitado (OLX_MCP_DISABLE_JINA=1)."},
+                ensure_ascii=False,
+            )
         # Fallback markdown via r.jina.ai
         try:
             md = await _fetch_via_jina(url)
@@ -567,7 +607,10 @@ async def olx_detalhe_anuncio(params: DetalheAnuncioInput) -> str:
         html = await _fetch_with_evasion(params.url)
     except Exception:
         if DISABLE_JINA:
-            return json.dumps({"erro": "Erro: acesso negado e fallback Jina desabilitado (OLX_MCP_DISABLE_JINA=1)."}, ensure_ascii=False)
+            return json.dumps(
+                {"erro": "Erro: acesso negado e fallback Jina desabilitado (OLX_MCP_DISABLE_JINA=1)."},
+                ensure_ascii=False,
+            )
         try:
             html = await _fetch_via_jina(params.url)
             used_jina = True
@@ -661,7 +704,9 @@ async def olx_detalhe_anuncio(params: DetalheAnuncioInput) -> str:
         return json.dumps(result, ensure_ascii=False, indent=2)
 
     except Exception as e:
-        return json.dumps({"erro": f"Falha ao processar anúncio: {type(e).__name__}: {e}"}, ensure_ascii=False)
+        return json.dumps(
+            {"erro": f"Falha ao processar anúncio: {type(e).__name__}: {e}"}, ensure_ascii=False
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -680,15 +725,15 @@ class BuscarMLInput(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, validate_assignment=True, extra="forbid")
 
     query: str = Field(..., min_length=1, max_length=200, description="Termo de busca.")
-    preco_min: Optional[int] = Field(default=None, ge=0, description="Preço mínimo em R$.")
-    preco_max: Optional[int] = Field(default=None, ge=0, description="Preço máximo em R$.")
-    estado: Optional[str] = Field(
-        default=None, min_length=2, max_length=2,
-        description="Sigla estado p/ filtrar resultados após scraping (heurística por texto)."
+    preco_min: int | None = Field(default=None, ge=0, description="Preço mínimo em R$.")
+    preco_max: int | None = Field(default=None, ge=0, description="Preço máximo em R$.")
+    estado: str | None = Field(
+        default=None,
+        min_length=2,
+        max_length=2,
+        description="Sigla estado p/ filtrar resultados após scraping (heurística por texto).",
     )
-    condicao: Optional[str] = Field(
-        default=None, description="'novo' ou 'usado'. Aplica filtro ITEM_CONDITION."
-    )
+    condicao: str | None = Field(default=None, description="'novo' ou 'usado'. Aplica filtro ITEM_CONDITION.")
     pagina: int = Field(default=1, ge=1, le=20)
 
 
@@ -707,9 +752,7 @@ def _build_ml_url(p: BuscarMLInput) -> tuple[str, list[str]]:
         if cond:
             # ML não respeita ITEM_CONDITION via slug em /lista — aplicamos
             # como filtro pós-scraping no título do anúncio.
-            avisos.append(
-                "Filtro 'condicao' aplicado pós-scraping (heurística por título)."
-            )
+            avisos.append("Filtro 'condicao' aplicado pós-scraping (heurística por título).")
     if p.pagina > 1:
         filters.append(f"_Desde_{(p.pagina - 1) * 50 + 1}")
     if filters:
@@ -722,11 +765,13 @@ def _parse_ml_html(html: str) -> list[dict]:
     anuncios = []
     cards = re.findall(
         r'<(?:li|div)[^>]*class="[^"]*(?:ui-search-layout__item|poly-card)[^"]*".*?</(?:li|div)>',
-        html, re.DOTALL,
+        html,
+        re.DOTALL,
     )
     for card in cards:
         title_m = re.search(
-            r'class="poly-component__title[^"]*"[^>]*>([^<]+)<', card,
+            r'class="poly-component__title[^"]*"[^>]*>([^<]+)<',
+            card,
         )
         if not title_m:
             continue
@@ -738,8 +783,8 @@ def _parse_ml_html(html: str) -> list[dict]:
         )
         link = link_m.group(1).replace("&amp;", "&").split("#")[0] if link_m else None
 
-        preco_int = re.search(r'andes-money-amount__fraction[^>]*>([\d\.]+)<', card)
-        preco_cents = re.search(r'andes-money-amount__cents[^>]*>([\d]+)<', card)
+        preco_int = re.search(r"andes-money-amount__fraction[^>]*>([\d\.]+)<", card)
+        preco_cents = re.search(r"andes-money-amount__cents[^>]*>([\d]+)<", card)
         preco = None
         if preco_int:
             val = preco_int.group(1).replace(".", "")
@@ -749,11 +794,11 @@ def _parse_ml_html(html: str) -> list[dict]:
         frete = "Frete grátis" if "Frete grátis" in card or "frete grátis" in card else None
 
         # Local (raro nos cards de busca ML; geralmente só na pdp)
-        loc_m = re.search(r'poly-component__location[^>]*>([^<]+)<', card)
+        loc_m = re.search(r"poly-component__location[^>]*>([^<]+)<", card)
         loc = loc_m.group(1).strip() if loc_m else None
 
         # Vendedor
-        sel_m = re.search(r'poly-component__seller[^>]*>([^<]+)<', card)
+        sel_m = re.search(r"poly-component__seller[^>]*>([^<]+)<", card)
         seller = sel_m.group(1).strip() if sel_m else None
 
         # Img
@@ -761,18 +806,20 @@ def _parse_ml_html(html: str) -> list[dict]:
         imagem = img_m.group(1) if img_m else None
 
         # Atributos (RAM, armazenamento etc) - poly-attributes_list
-        attrs = re.findall(r'poly-attributes_list__item[^>]*>([^<]+)<', card)
+        attrs = re.findall(r"poly-attributes_list__item[^>]*>([^<]+)<", card)
 
-        anuncios.append({
-            "titulo": titulo,
-            "preco": preco,
-            "frete": frete,
-            "vendedor": seller,
-            "localizacao": loc,
-            "atributos": [a.strip() for a in attrs if a.strip()],
-            "imagem": imagem,
-            "url": link,
-        })
+        anuncios.append(
+            {
+                "titulo": titulo,
+                "preco": preco,
+                "frete": frete,
+                "vendedor": seller,
+                "localizacao": loc,
+                "atributos": [a.strip() for a in attrs if a.strip()],
+                "imagem": imagem,
+                "url": link,
+            }
+        )
     return anuncios
 
 
@@ -832,19 +879,24 @@ async def ml_buscar_anuncios(params: BuscarMLInput) -> str:
                 "considere remover o filtro."
             )
 
-    return json.dumps({
-        "fonte": "ml",
-        "total_retornados": len(anuncios),
-        "pagina": params.pagina,
-        "url_busca": url,
-        "avisos": avisos,
-        "anuncios": anuncios,
-    }, ensure_ascii=False, indent=2)
+    return json.dumps(
+        {
+            "fonte": "ml",
+            "total_retornados": len(anuncios),
+            "pagina": params.pagina,
+            "url_busca": url,
+            "avisos": avisos,
+            "anuncios": anuncios,
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
 
 
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
+
 
 def main() -> None:
     """Entry point para `olx-mcp` console_script e `python -m olx_mcp`."""

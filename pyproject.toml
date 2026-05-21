@@ -38,3 +38,30 @@ Issues = "https://github.com/rodrigopg/olx-mcp/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["olx_mcp"]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.6",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+# Integração depende de rede + servidor real — rodar manual com -m integration
+addopts = "--ignore=tests/integration"
+markers = [
+    "integration: testes que dependem de rede (OLX/ML/Jina)",
+]
+
+[tool.ruff]
+line-length = 110
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = ["E501"]  # line-length checada por outro hook
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B", "E731"]
