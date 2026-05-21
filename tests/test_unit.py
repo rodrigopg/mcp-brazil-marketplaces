@@ -6,12 +6,15 @@ import pytest
 
 from olx_mcp.server import (
     ALLOWED_OLX_HOSTS,
+    MAX_HTML_BYTES,
+    MAX_NEXT_DATA_BYTES,
     BuscarAnunciosInput,
     BuscarMLInput,
     DetalheAnuncioInput,
     OrdenarPor,
     _build_ml_url,
     _build_search_url,
+    _extract_next_data,
     _format_ad_summary,
     _format_timestamp,
     _parse_ml_html,
@@ -169,6 +172,37 @@ class TestMarkdownParser:
         assert d["total"] == 42
         assert len(d["anuncios"]) == 1
         assert d["anuncios"][0]["preco"] == "R$ 1.000"
+
+
+class TestExtractNextData:
+    def test_extract_basic(self):
+        html = '<html><script id="__NEXT_DATA__" type="application/json">{"a":1}</script></html>'
+        assert _extract_next_data(html) == {"a": 1}
+
+    def test_redos_payload_completes_fast(self):
+        # Padrão clássico catastrophic backtracking p/ `.*?` em re.DOTALL.
+        # Com regex linear, mesmo 1MB de lixo termina em <1s.
+        import time
+
+        payload = '<script id="__NEXT_DATA__">' + "a" * 1_000_000  # sem </script>
+        t0 = time.monotonic()
+        try:
+            _extract_next_data(payload)
+        except ValueError:
+            pass
+        assert time.monotonic() - t0 < 1.5, "regex pode ter regredido p/ backtracking"
+
+    def test_blob_oversize_rejected(self):
+        big = "x" * (MAX_NEXT_DATA_BYTES + 10)
+        html = f'<script id="__NEXT_DATA__">{big}</script>'
+        with pytest.raises(ValueError, match="excede limite"):
+            _extract_next_data(html)
+
+    def test_html_hard_capped(self):
+        assert MAX_HTML_BYTES > 0
+        # Garante que truncar HTML não quebra extração se blob estiver no início
+        html = '<script id="__NEXT_DATA__">{"ok":true}</script>' + "Z" * MAX_HTML_BYTES
+        assert _extract_next_data(html) == {"ok": True}
 
 
 class TestSchemaConsistency:

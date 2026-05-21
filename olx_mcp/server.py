@@ -261,18 +261,36 @@ def _build_search_url(params: BuscarAnunciosInput) -> str:
     return f"{path}?{qs}"
 
 
+MAX_HTML_BYTES = 8 * 1024 * 1024  # 8 MB — páginas reais OLX ficam <2MB
+MAX_NEXT_DATA_BYTES = 5 * 1024 * 1024  # 5 MB — blob JSON #20
+
+# Regex sem `.*?` em re.DOTALL — evita catastrophic backtracking em HTML
+# adversarial. `[^<]*` é linear porque exclui `<`, garantindo que a
+# engine não revisite caracteres já consumidos.
+_NEXT_DATA_RE = re.compile(r'id="__NEXT_DATA__"[^>]{0,500}>([^<]+)</script>')
+
+
 def _extract_next_data(html: str) -> dict:
-    """Extrai o JSON embutido no __NEXT_DATA__ da página."""
-    match = re.search(
-        r'id="__NEXT_DATA__"[^>]*>(.*?)</script>',
-        html,
-        re.DOTALL,
-    )
+    """Extrai o JSON embutido no __NEXT_DATA__ da página.
+
+    Defesas:
+    - HTML hard-cap (`MAX_HTML_BYTES`) p/ limitar trabalho da regex.
+    - Regex linear (`[^<]+`) em vez de `.*?` p/ evitar ReDoS (#19).
+    - JSON blob hard-cap (`MAX_NEXT_DATA_BYTES`) p/ evitar OOM (#20).
+    """
+    if len(html) > MAX_HTML_BYTES:
+        html = html[:MAX_HTML_BYTES]
+
+    match = _NEXT_DATA_RE.search(html)
     if not match:
         raise ValueError(
             "Não foi possível encontrar dados estruturados na página. A OLX pode estar bloqueando a requisição."
         )
-    return json.loads(match.group(1))
+
+    blob = match.group(1)
+    if len(blob) > MAX_NEXT_DATA_BYTES:
+        raise ValueError(f"Payload __NEXT_DATA__ excede limite ({len(blob)} > {MAX_NEXT_DATA_BYTES} bytes).")
+    return json.loads(blob)
 
 
 def _format_timestamp(ts: int) -> str:
@@ -731,9 +749,21 @@ class BuscarMLInput(BaseModel):
         default=None,
         min_length=2,
         max_length=2,
-        description="Sigla estado p/ filtrar resultados após scraping (heurística por texto).",
+        description=(
+            "AVISO: heurística best-effort. ML raramente expõe localização "
+            "nos cards de listagem, então este filtro frequentemente retorna "
+            "lista vazia mesmo quando há resultados no estado. Para resultados "
+            "confiáveis por região, use ml_buscar_anuncios sem este campo e "
+            "filtre pelo título/descrição do anúncio."
+        ),
     )
-    condicao: str | None = Field(default=None, description="'novo' ou 'usado'. Aplica filtro ITEM_CONDITION.")
+    condicao: str | None = Field(
+        default=None,
+        description=(
+            "'novo' ou 'usado'. AVISO: ML ignora o filtro via URL, então é "
+            "aplicado pós-scraping por heurística no título do anúncio."
+        ),
+    )
     pagina: int = Field(default=1, ge=1, le=20)
 
 
