@@ -168,13 +168,47 @@ annotations={
 
 ---
 
-## Testing
+## Workflow obrigatório — Issue + Test + Lint
+
+**REGRA (sem exceções):** toda mudança — nova feature, bug fix, refactor, "ajustinho de 2 linhas", typo, qualquer coisa — passa por:
+
+1. **GitHub Issue antes** — abrir via `gh issue create` com labels apropriadas (`architecture` / `scope` / `security` / `blocker` / `good first issue`). Sem issue = sem trabalho. Commit message e PR referenciam a issue (`Closes #N`).
+2. **Teste antes de commit** — adicionar/atualizar `tests/test_unit.py` (ou módulo equivalente) cobrindo o caminho mudado. Tests unitários NÃO podem depender de rede; mocks ou fixtures sintéticas. Integração vai em `tests/integration/` (não roda em CI).
+3. **Lint + format limpos** — antes de `git commit`:
+   ```bash
+   .venv/bin/ruff check .
+   .venv/bin/ruff format --check .
+   .venv/bin/pytest -v
+   ```
+   Todos verdes. CI no GitHub Actions roda o mesmo conjunto em Python 3.10–3.13.
+4. **Atualizar issue** — comentar status na issue (link do PR, decisões, blockers). Fechar via PR (`Closes #N`).
+
+**Por quê:** sem CI + issue tracking, releases publicadas no PyPI ficam expostas a regressões silenciosas, mudanças sem rastro de motivação, e bugs reportados sem onde discutir. Pacote público exige disciplina mínima.
+
+### Comandos rápidos
 
 ```bash
-.venv/bin/python -m pytest test_mcp.py -v
+# Setup dev
+python -m venv .venv
+.venv/bin/pip install -e ".[dev]"
+
+# Loop dev
+.venv/bin/ruff check . --fix
+.venv/bin/ruff format .
+.venv/bin/pytest -v
+
+# Integração (manual, depende de rede OLX/ML/Jina)
+.venv/bin/python tests/integration/test_mcp_integration.py
 ```
 
-When adding tests, use `pytest` with `pytest-asyncio` for async tool functions. Mock `httpx.AsyncClient` to avoid real HTTP calls.
+### Criar issue ao detectar problema
+
+Mesmo se for resolver na hora, **abra a issue primeiro** — vira o registro permanente do "porquê". Use:
+
+```bash
+gh issue create --title "[CODE] Título curto" --label security \
+  --body "Descrição do problema, impacto, solução proposta."
+```
 
 ---
 
