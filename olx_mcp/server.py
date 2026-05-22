@@ -5,9 +5,11 @@ Busca anúncios públicos da OLX Brasil via scraping do __NEXT_DATA__.
 
 import asyncio
 import json
+import logging
 import os
 import random
 import re
+import uuid
 from datetime import datetime
 from enum import Enum
 from urllib.parse import urlparse
@@ -15,6 +17,12 @@ from urllib.parse import urlparse
 import httpx
 from mcp.server.fastmcp import FastMCP
 from pydantic import BaseModel, ConfigDict, Field
+
+logger = logging.getLogger("olx_mcp")
+_log_level = os.getenv("OLX_MCP_LOG_LEVEL", "WARNING").upper()
+if _log_level in ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"):
+    logging.basicConfig(level=_log_level)
+    logger.setLevel(_log_level)
 
 # ---------------------------------------------------------------------------
 # Feature flags via env
@@ -89,10 +97,35 @@ def _build_headers(
     return h
 
 
-REQUEST_TIMEOUT = 25.0
+def _env_float(key: str, default: float, lo: float, hi: float) -> float:
+    """Lê env var como float com clamp e fallback silencioso."""
+    raw = os.getenv(key)
+    if not raw:
+        return default
+    try:
+        v = float(raw)
+    except ValueError:
+        logger.warning("Env %s inválido (%r), usando default %s", key, raw, default)
+        return default
+    return max(lo, min(hi, v))
+
+
+def _env_int(key: str, default: int, lo: int, hi: int) -> int:
+    raw = os.getenv(key)
+    if not raw:
+        return default
+    try:
+        v = int(raw)
+    except ValueError:
+        logger.warning("Env %s inválido (%r), usando default %s", key, raw, default)
+        return default
+    return max(lo, min(hi, v))
+
+
+REQUEST_TIMEOUT = _env_float("OLX_MCP_REQUEST_TIMEOUT", 25.0, 1.0, 300.0)
 HTTP2 = True  # Obrigatório: OLX retorna 403 em HTTP/1.1
-MAX_RETRIES = 4
-WARMUP_PROBABILITY = 0.7  # chance de fazer warm-up homepage antes da busca
+MAX_RETRIES = _env_int("OLX_MCP_MAX_RETRIES", 4, 0, 20)
+WARMUP_PROBABILITY = _env_float("OLX_MCP_WARMUP_PROBABILITY", 0.7, 0.0, 1.0)
 
 ESTADOS = {
     "ac",
@@ -478,7 +511,14 @@ def _parse_search_markdown(md: str, url_busca: str) -> dict:
 
 
 def _handle_http_error(e: Exception) -> str:
-    """Formata erros HTTP de forma padronizada."""
+    """Formata erros HTTP de forma padronizada.
+
+    Mensagens conhecidas (HTTP status, timeout, validação) são seguras:
+    não contêm caminhos internos nem detalhes da stack. Para qualquer
+    exceção desconhecida, geramos um correlation ID, logamos a stack
+    completa internamente, e devolvemos apenas o ID ao caller — evita
+    leak de paths, tokens e estado de runtime (issue #21).
+    """
     if isinstance(e, httpx.HTTPStatusError):
         code = e.response.status_code
         if code == 404:
@@ -487,12 +527,15 @@ def _handle_http_error(e: Exception) -> str:
             return "Erro: acesso negado (403). A OLX pode estar bloqueando requisições automatizadas."
         if code == 429:
             return "Erro: muitas requisições (429). Aguarde alguns segundos antes de tentar novamente."
-        return f"Erro HTTP {code}: {e.response.text[:200]}"
+        # body da resposta pode conter HTML longo — não propagar
+        return f"Erro HTTP {code}: resposta inesperada do servidor."
     if isinstance(e, httpx.TimeoutException):
         return "Erro: timeout na requisição. Tente novamente."
     if isinstance(e, ValueError):
         return f"Erro de validação: {e}"
-    return f"Erro inesperado: {type(e).__name__}: {e}"
+    err_id = uuid.uuid4().hex[:8]
+    logger.exception("Erro inesperado [%s]: %s", err_id, e)
+    return f"Erro inesperado (id={err_id}). Consulte os logs do servidor para detalhes."
 
 
 # ---------------------------------------------------------------------------
@@ -561,7 +604,9 @@ async def olx_buscar_anuncios(params: BuscarAnunciosInput) -> str:
         data = _extract_next_data(html)
         props = data["props"]["pageProps"]
     except Exception as e:
-        return json.dumps({"erro": f"Falha ao extrair dados: {e}"}, ensure_ascii=False)
+        err_id = uuid.uuid4().hex[:8]
+        logger.exception("Falha ao extrair dados [%s]: %s", err_id, e)
+        return json.dumps({"erro": f"Falha ao extrair dados (id={err_id})."}, ensure_ascii=False)
 
     ads_raw = props.get("ads", [])
     anuncios = [_format_ad_summary(ad) for ad in ads_raw if ad.get("listId")]
@@ -654,7 +699,9 @@ async def olx_detalhe_anuncio(params: DetalheAnuncioInput) -> str:
             }
             return json.dumps(result, ensure_ascii=False, indent=2)
         except Exception as e:
-            return json.dumps({"erro": f"Falha ao parsear markdown: {e}"}, ensure_ascii=False)
+            err_id = uuid.uuid4().hex[:8]
+            logger.exception("Falha ao parsear markdown [%s]: %s", err_id, e)
+            return json.dumps({"erro": f"Falha ao parsear markdown (id={err_id})."}, ensure_ascii=False)
 
     try:
         # Extrai JSON de rastreamento embarcado no dataLayer (mais consistente para detalhes)
@@ -722,9 +769,9 @@ async def olx_detalhe_anuncio(params: DetalheAnuncioInput) -> str:
         return json.dumps(result, ensure_ascii=False, indent=2)
 
     except Exception as e:
-        return json.dumps(
-            {"erro": f"Falha ao processar anúncio: {type(e).__name__}: {e}"}, ensure_ascii=False
-        )
+        err_id = uuid.uuid4().hex[:8]
+        logger.exception("Falha ao processar anúncio [%s]: %s", err_id, e)
+        return json.dumps({"erro": f"Falha ao processar anúncio (id={err_id})."}, ensure_ascii=False)
 
 
 # ---------------------------------------------------------------------------
@@ -732,8 +779,14 @@ async def olx_detalhe_anuncio(params: DetalheAnuncioInput) -> str:
 # ---------------------------------------------------------------------------
 
 ML_BASE = "https://lista.mercadolivre.com.br"
+
+# UA Googlebot bypassa o micro-landing anti-bot do ML. Operadores que
+# considerem o spoof inaceitável (risco ético/legal) podem sobrescrever
+# via OLX_MCP_ML_USER_AGENT — nesse caso o ML geralmente devolve a
+# página de challenge e a tool retorna lista vazia, mas sem spoof.
+_ML_DEFAULT_UA = "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)"
 ML_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
+    "User-Agent": os.getenv("OLX_MCP_ML_USER_AGENT") or _ML_DEFAULT_UA,
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8",
 }

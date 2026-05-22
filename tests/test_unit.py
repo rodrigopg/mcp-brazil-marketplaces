@@ -1,6 +1,7 @@
 """Unit tests sem rede — rodam em CI rápido."""
 
 import json
+import os
 
 import pytest
 
@@ -203,6 +204,93 @@ class TestExtractNextData:
         # Garante que truncar HTML não quebra extração se blob estiver no início
         html = '<script id="__NEXT_DATA__">{"ok":true}</script>' + "Z" * MAX_HTML_BYTES
         assert _extract_next_data(html) == {"ok": True}
+
+
+class TestMlUserAgentOverride:
+    def test_default_is_googlebot(self):
+        from olx_mcp.server import _ML_DEFAULT_UA, ML_HEADERS
+
+        # Em ambiente de teste padrão (sem env), UA deve ser googlebot
+        if not os.environ.get("OLX_MCP_ML_USER_AGENT"):
+            assert ML_HEADERS["User-Agent"] == _ML_DEFAULT_UA
+            assert "Googlebot" in _ML_DEFAULT_UA
+
+    def test_env_override_applied_on_reimport(self, monkeypatch):
+        import importlib
+
+        monkeypatch.setenv("OLX_MCP_ML_USER_AGENT", "MyCustomBot/1.0")
+        import olx_mcp.server as srv
+
+        importlib.reload(srv)
+        try:
+            assert srv.ML_HEADERS["User-Agent"] == "MyCustomBot/1.0"
+        finally:
+            monkeypatch.delenv("OLX_MCP_ML_USER_AGENT", raising=False)
+            importlib.reload(srv)
+
+
+class TestEnvHelpers:
+    def test_env_float_default_when_unset(self, monkeypatch):
+        from olx_mcp.server import _env_float
+
+        monkeypatch.delenv("X_TEST_FLOAT", raising=False)
+        assert _env_float("X_TEST_FLOAT", 1.5, 0.0, 10.0) == 1.5
+
+    def test_env_float_clamps_high(self, monkeypatch):
+        from olx_mcp.server import _env_float
+
+        monkeypatch.setenv("X_TEST_FLOAT", "999")
+        assert _env_float("X_TEST_FLOAT", 1.0, 0.0, 10.0) == 10.0
+
+    def test_env_float_invalid_falls_back(self, monkeypatch):
+        from olx_mcp.server import _env_float
+
+        monkeypatch.setenv("X_TEST_FLOAT", "abc")
+        assert _env_float("X_TEST_FLOAT", 2.0, 0.0, 10.0) == 2.0
+
+    def test_env_int_clamps_low(self, monkeypatch):
+        from olx_mcp.server import _env_int
+
+        monkeypatch.setenv("X_TEST_INT", "-50")
+        assert _env_int("X_TEST_INT", 5, 0, 20) == 0
+
+
+class TestErrorMessages:
+    def test_handle_unknown_exception_returns_correlation_id(self):
+        from olx_mcp.server import _handle_http_error
+
+        class WeirdError(Exception):
+            pass
+
+        msg = _handle_http_error(WeirdError("/Users/secret/path token=abc123"))
+        # mensagem genérica com id, sem path/token vazado
+        assert "id=" in msg
+        assert "/Users/secret" not in msg
+        assert "token=abc123" not in msg
+
+    def test_handle_http_status_no_body_leak(self):
+        import httpx
+
+        req = httpx.Request("GET", "https://x")
+        resp = httpx.Response(500, request=req, text="STACKTRACE_INTERNO_VAZA")
+        msg = _handle_http_error_wrapper(resp)
+        assert "STACKTRACE_INTERNO_VAZA" not in msg
+
+    def test_handle_validation_keeps_message(self):
+        from olx_mcp.server import _handle_http_error
+
+        msg = _handle_http_error(ValueError("estado inválido"))
+        assert "estado inválido" in msg
+
+
+def _handle_http_error_wrapper(resp):
+    """Helper: simula HTTPStatusError do httpx."""
+    import httpx
+
+    from olx_mcp.server import _handle_http_error
+
+    err = httpx.HTTPStatusError("boom", request=resp.request, response=resp)
+    return _handle_http_error(err)
 
 
 class TestSchemaConsistency:

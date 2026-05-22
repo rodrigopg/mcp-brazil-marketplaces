@@ -140,6 +140,31 @@ Rodar o servidor localmente:
 .venv/bin/python -m olx_mcp
 ```
 
+## Campo `fonte` na resposta
+
+Toda resposta inclui um campo `fonte` no envelope (e em cada anúncio) indicando a origem dos dados:
+
+| Valor | Significado |
+|---|---|
+| `olx` | Scraping direto da OLX via httpx (caminho preferido) |
+| `olx_jina` | Fallback: a OLX bloqueou e usamos [r.jina.ai](https://r.jina.ai) como proxy reader |
+| `ml` | Scraping direto do Mercado Livre via UA Googlebot |
+
+Verifique sempre `fonte` antes de tomar decisão crítica — payloads `olx_jina` vêm de markdown reduzido, com menos campos (sem `propriedades`, sem `entrega_olx`, sem timestamps precisos). Para desabilitar o fallback Jina, defina `OLX_MCP_DISABLE_JINA=1` (ver abaixo).
+
+## Variáveis de ambiente
+
+Todos os parâmetros operacionais podem ser ajustados via env (com clamp seguro):
+
+| Variável | Default | Faixa | Descrição |
+|---|---|---|---|
+| `OLX_MCP_REQUEST_TIMEOUT` | `25.0` | 1.0–300.0 | Timeout HTTP em segundos |
+| `OLX_MCP_MAX_RETRIES` | `4` | 0–20 | Tentativas no fetcher OLX (retry + troca de perfil) |
+| `OLX_MCP_WARMUP_PROBABILITY` | `0.7` | 0.0–1.0 | Chance de warm-up da homepage antes do search |
+| `OLX_MCP_DISABLE_JINA` | `0` | `0`/`1` | Desabilita fallback via `r.jina.ai` |
+| `OLX_MCP_LOG_LEVEL` | `WARNING` | `DEBUG`/`INFO`/`WARNING`/`ERROR` | Nível do logger `olx_mcp` |
+| `OLX_MCP_ML_USER_AGENT` | (Googlebot) | qualquer string | Sobrescreve UA usado no Mercado Livre. Use se o spoof de Googlebot for inaceitável — ML geralmente devolverá a página anti-bot e a tool retornará lista vazia. |
+
 ## Privacidade e considerações
 
 - **Fallback via `r.jina.ai`:** quando a OLX bloqueia requisições diretas, o servidor reenvia a URL pelo serviço público [r.jina.ai](https://r.jina.ai) para obter o conteúdo em markdown. Isso significa que **a Jina AI tem acesso ao log das URLs consultadas** durante o fallback. Para desabilitar:
@@ -148,7 +173,7 @@ Rodar o servidor localmente:
   ```
   Com a flag ativa, falhas de bypass retornam erro em vez de consultar terceiros. Toda resposta inclui o campo `fonte` (`olx`, `olx_jina`, `ml`) para que você saiba a origem dos dados.
 
-- **Mercado Livre — Googlebot UA:** o scraper do ML usa `User-Agent: Googlebot/2.1` para contornar a página de challenge anti-bot. ML pode banir IPs que detectem o spoof; use moderadamente.
+- **Mercado Livre — Googlebot UA:** o scraper do ML usa `User-Agent: Googlebot/2.1` para contornar a página de challenge anti-bot. ML pode banir IPs que detectem o spoof; use moderadamente. Para desabilitar o spoof, defina `OLX_MCP_ML_USER_AGENT` com um UA real (esperado: ML retornará challenge e a tool dará lista vazia).
 
 - **Scraping de dados públicos:** este servidor consulta dados públicos da OLX e do Mercado Livre. Use com responsabilidade e respeite os termos de uso de cada site.
 
