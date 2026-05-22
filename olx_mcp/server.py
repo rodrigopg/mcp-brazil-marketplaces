@@ -779,8 +779,14 @@ async def olx_detalhe_anuncio(params: DetalheAnuncioInput) -> str:
 # ---------------------------------------------------------------------------
 
 ML_BASE = "https://lista.mercadolivre.com.br"
+
+# UA Googlebot bypassa o micro-landing anti-bot do ML. Operadores que
+# considerem o spoof inaceitável (risco ético/legal) podem sobrescrever
+# via OLX_MCP_ML_USER_AGENT — nesse caso o ML geralmente devolve a
+# página de challenge e a tool retorna lista vazia, mas sem spoof.
+_ML_DEFAULT_UA = "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)"
 ML_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
+    "User-Agent": os.getenv("OLX_MCP_ML_USER_AGENT") or _ML_DEFAULT_UA,
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8",
 }

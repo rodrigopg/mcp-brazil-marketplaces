@@ -1,6 +1,7 @@
 """Unit tests sem rede — rodam em CI rápido."""
 
 import json
+import os
 
 import pytest
 
@@ -203,6 +204,29 @@ class TestExtractNextData:
         # Garante que truncar HTML não quebra extração se blob estiver no início
         html = '<script id="__NEXT_DATA__">{"ok":true}</script>' + "Z" * MAX_HTML_BYTES
         assert _extract_next_data(html) == {"ok": True}
+
+
+class TestMlUserAgentOverride:
+    def test_default_is_googlebot(self):
+        from olx_mcp.server import _ML_DEFAULT_UA, ML_HEADERS
+
+        # Em ambiente de teste padrão (sem env), UA deve ser googlebot
+        if not os.environ.get("OLX_MCP_ML_USER_AGENT"):
+            assert ML_HEADERS["User-Agent"] == _ML_DEFAULT_UA
+            assert "Googlebot" in _ML_DEFAULT_UA
+
+    def test_env_override_applied_on_reimport(self, monkeypatch):
+        import importlib
+
+        monkeypatch.setenv("OLX_MCP_ML_USER_AGENT", "MyCustomBot/1.0")
+        import olx_mcp.server as srv
+
+        importlib.reload(srv)
+        try:
+            assert srv.ML_HEADERS["User-Agent"] == "MyCustomBot/1.0"
+        finally:
+            monkeypatch.delenv("OLX_MCP_ML_USER_AGENT", raising=False)
+            importlib.reload(srv)
 
 
 class TestEnvHelpers:
