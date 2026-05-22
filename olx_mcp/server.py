@@ -5,9 +5,11 @@ Busca anúncios públicos da OLX Brasil via scraping do __NEXT_DATA__.
 
 import asyncio
 import json
+import logging
 import os
 import random
 import re
+import uuid
 from datetime import datetime
 from enum import Enum
 from urllib.parse import urlparse
@@ -15,6 +17,8 @@ from urllib.parse import urlparse
 import httpx
 from mcp.server.fastmcp import FastMCP
 from pydantic import BaseModel, ConfigDict, Field
+
+logger = logging.getLogger("olx_mcp")
 
 # ---------------------------------------------------------------------------
 # Feature flags via env
@@ -478,7 +482,14 @@ def _parse_search_markdown(md: str, url_busca: str) -> dict:
 
 
 def _handle_http_error(e: Exception) -> str:
-    """Formata erros HTTP de forma padronizada."""
+    """Formata erros HTTP de forma padronizada.
+
+    Mensagens conhecidas (HTTP status, timeout, validação) são seguras:
+    não contêm caminhos internos nem detalhes da stack. Para qualquer
+    exceção desconhecida, geramos um correlation ID, logamos a stack
+    completa internamente, e devolvemos apenas o ID ao caller — evita
+    leak de paths, tokens e estado de runtime (issue #21).
+    """
     if isinstance(e, httpx.HTTPStatusError):
         code = e.response.status_code
         if code == 404:
@@ -487,12 +498,15 @@ def _handle_http_error(e: Exception) -> str:
             return "Erro: acesso negado (403). A OLX pode estar bloqueando requisições automatizadas."
         if code == 429:
             return "Erro: muitas requisições (429). Aguarde alguns segundos antes de tentar novamente."
-        return f"Erro HTTP {code}: {e.response.text[:200]}"
+        # body da resposta pode conter HTML longo — não propagar
+        return f"Erro HTTP {code}: resposta inesperada do servidor."
     if isinstance(e, httpx.TimeoutException):
         return "Erro: timeout na requisição. Tente novamente."
     if isinstance(e, ValueError):
         return f"Erro de validação: {e}"
-    return f"Erro inesperado: {type(e).__name__}: {e}"
+    err_id = uuid.uuid4().hex[:8]
+    logger.exception("Erro inesperado [%s]: %s", err_id, e)
+    return f"Erro inesperado (id={err_id}). Consulte os logs do servidor para detalhes."
 
 
 # ---------------------------------------------------------------------------
@@ -561,7 +575,9 @@ async def olx_buscar_anuncios(params: BuscarAnunciosInput) -> str:
         data = _extract_next_data(html)
         props = data["props"]["pageProps"]
     except Exception as e:
-        return json.dumps({"erro": f"Falha ao extrair dados: {e}"}, ensure_ascii=False)
+        err_id = uuid.uuid4().hex[:8]
+        logger.exception("Falha ao extrair dados [%s]: %s", err_id, e)
+        return json.dumps({"erro": f"Falha ao extrair dados (id={err_id})."}, ensure_ascii=False)
 
     ads_raw = props.get("ads", [])
     anuncios = [_format_ad_summary(ad) for ad in ads_raw if ad.get("listId")]
@@ -654,7 +670,9 @@ async def olx_detalhe_anuncio(params: DetalheAnuncioInput) -> str:
             }
             return json.dumps(result, ensure_ascii=False, indent=2)
         except Exception as e:
-            return json.dumps({"erro": f"Falha ao parsear markdown: {e}"}, ensure_ascii=False)
+            err_id = uuid.uuid4().hex[:8]
+            logger.exception("Falha ao parsear markdown [%s]: %s", err_id, e)
+            return json.dumps({"erro": f"Falha ao parsear markdown (id={err_id})."}, ensure_ascii=False)
 
     try:
         # Extrai JSON de rastreamento embarcado no dataLayer (mais consistente para detalhes)
@@ -722,9 +740,9 @@ async def olx_detalhe_anuncio(params: DetalheAnuncioInput) -> str:
         return json.dumps(result, ensure_ascii=False, indent=2)
 
     except Exception as e:
-        return json.dumps(
-            {"erro": f"Falha ao processar anúncio: {type(e).__name__}: {e}"}, ensure_ascii=False
-        )
+        err_id = uuid.uuid4().hex[:8]
+        logger.exception("Falha ao processar anúncio [%s]: %s", err_id, e)
+        return json.dumps({"erro": f"Falha ao processar anúncio (id={err_id})."}, ensure_ascii=False)
 
 
 # ---------------------------------------------------------------------------

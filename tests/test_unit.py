@@ -205,6 +205,44 @@ class TestExtractNextData:
         assert _extract_next_data(html) == {"ok": True}
 
 
+class TestErrorMessages:
+    def test_handle_unknown_exception_returns_correlation_id(self):
+        from olx_mcp.server import _handle_http_error
+
+        class WeirdError(Exception):
+            pass
+
+        msg = _handle_http_error(WeirdError("/Users/secret/path token=abc123"))
+        # mensagem genérica com id, sem path/token vazado
+        assert "id=" in msg
+        assert "/Users/secret" not in msg
+        assert "token=abc123" not in msg
+
+    def test_handle_http_status_no_body_leak(self):
+        import httpx
+
+        req = httpx.Request("GET", "https://x")
+        resp = httpx.Response(500, request=req, text="STACKTRACE_INTERNO_VAZA")
+        msg = _handle_http_error_wrapper(resp)
+        assert "STACKTRACE_INTERNO_VAZA" not in msg
+
+    def test_handle_validation_keeps_message(self):
+        from olx_mcp.server import _handle_http_error
+
+        msg = _handle_http_error(ValueError("estado inválido"))
+        assert "estado inválido" in msg
+
+
+def _handle_http_error_wrapper(resp):
+    """Helper: simula HTTPStatusError do httpx."""
+    import httpx
+
+    from olx_mcp.server import _handle_http_error
+
+    err = httpx.HTTPStatusError("boom", request=resp.request, response=resp)
+    return _handle_http_error(err)
+
+
 class TestSchemaConsistency:
     """Garante que toda resposta de tool tem campo `fonte` para o LLM."""
 
