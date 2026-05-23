@@ -302,6 +302,27 @@ def _handle_http_error_wrapper(resp):
     return _handle_http_error(err)
 
 
+class TestLogging:
+    def test_logger_name_is_package(self):
+        from mcp_brazil_marketplaces.server import logger
+
+        assert logger.name == "mcp_brazil_marketplaces"
+
+    def test_correlation_id_logged_on_unknown_error(self, caplog):
+        import logging as _l
+
+        from mcp_brazil_marketplaces.server import _handle_http_error
+
+        with caplog.at_level(_l.ERROR, logger="mcp_brazil_marketplaces"):
+            msg = _handle_http_error(RuntimeError("boom"))
+        # ID retornado bate com o logado
+        import re as _re
+
+        m = _re.search(r"id=([a-f0-9]+)", msg)
+        assert m, "resposta deve conter correlation ID"
+        assert m.group(1) in caplog.text
+
+
 class TestRateLimit:
     @pytest.mark.asyncio
     async def test_min_gap_enforced(self, monkeypatch):

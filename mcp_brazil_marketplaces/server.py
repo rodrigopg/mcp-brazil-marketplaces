@@ -487,6 +487,7 @@ async def _fetch_with_evasion(url: str, referer_override: str | None = None) -> 
 async def _fetch_via_jina(url: str) -> str:
     """Fallback usando r.jina.ai como proxy reader. Retorna markdown."""
     proxy_url = f"https://r.jina.ai/{url}"
+    logger.info("jina_fallback url=%s", url)
     async with _RateGate(proxy_url):
         async with httpx.AsyncClient(follow_redirects=True, timeout=REQUEST_TIMEOUT) as client:
             resp = await client.get(
@@ -652,6 +653,13 @@ async def olx_buscar_anuncios(params: BuscarAnunciosInput) -> str:
     except ValueError as e:
         return json.dumps({"erro": str(e)}, ensure_ascii=False)
 
+    logger.info(
+        "olx_search query=%r estado=%s categoria=%s pagina=%s",
+        params.query,
+        params.estado,
+        params.categoria,
+        params.pagina,
+    )
     html = None
     try:
         html = await _fetch_with_evasion(url)
@@ -1001,6 +1009,7 @@ async def ml_buscar_anuncios(params: BuscarMLInput) -> str:
         str: JSON com lista de anúncios (titulo, preco, frete, atributos, url, imagem).
     """
     url, avisos = _build_ml_url(params)
+    logger.info("ml_search query=%r condicao=%s pagina=%s", params.query, params.condicao, params.pagina)
     try:
         async with _RateGate(url):
             async with httpx.AsyncClient(
