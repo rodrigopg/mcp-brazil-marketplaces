@@ -1029,16 +1029,27 @@ def _parse_ml_html(html: str) -> list[dict]:
         # Atributos (RAM, armazenamento etc) - poly-attributes_list
         attrs = re.findall(r"poly-attributes_list__item[^>]*>([^<]+)<", card)
 
+        # ID extraído do MLB-<digits> na URL — campo comum a OLX/ML
+        ad_id: str | int | None = None
+        if link:
+            m_id = re.search(r"MLB-?(\d+)", link)
+            if m_id:
+                ad_id = int(m_id.group(1))
+
         anuncios.append(
             {
+                # campos comuns (schema unificado)
+                "id": ad_id,
                 "titulo": titulo,
                 "preco": preco,
+                "localizacao": loc,
+                "data": None,  # ML não expõe data nos cards
+                "url": link,
+                "imagem": imagem,
+                # campos específicos ML
                 "frete": frete,
                 "vendedor": seller,
-                "localizacao": loc,
                 "atributos": [a.strip() for a in attrs if a.strip()],
-                "imagem": imagem,
-                "url": link,
             }
         )
     return anuncios
@@ -1107,8 +1118,9 @@ async def ml_buscar_anuncios(params: BuscarMLInput) -> str:
     return json.dumps(
         {
             "fonte": "ml",
-            "total_retornados": len(anuncios),
+            "total": len(anuncios),  # ML não expõe totalOfAds; reflete itens retornados
             "pagina": params.pagina,
+            "por_pagina": len(anuncios),
             "url_busca": url,
             "avisos": avisos,
             "anuncios": anuncios,

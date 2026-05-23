@@ -187,6 +187,11 @@ class TestMlParser:
         assert ads[0]["titulo"] == "iPhone 13 128GB"
         assert ads[0]["preco"] == "R$ 3500,00"
         assert "MLB-123" in ads[0]["url"]
+        # schema unificado E1: ID extraído da URL
+        assert ads[0]["id"] == 123
+        # campos comuns presentes mesmo quando vazios
+        for k in ("titulo", "preco", "localizacao", "data", "url", "imagem"):
+            assert k in ads[0]
 
 
 class TestMarkdownParser:

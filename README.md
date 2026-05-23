@@ -140,6 +140,28 @@ Rodar o servidor localmente:
 .venv/bin/python -m mcp_brazil_marketplaces
 ```
 
+## Schema unificado de anúncio
+
+Todas as tools devolvem anúncios com os mesmos campos básicos. Campos específicos por fonte são adicionais.
+
+**Comum a OLX e ML:**
+
+| Campo | Tipo | Descrição |
+|---|---|---|
+| `fonte` | string | `olx` \| `olx_jina` \| `ml` |
+| `id` | int \| string | ID do anúncio |
+| `titulo` | string | Título |
+| `preco` | string | Preço formatado (`R$ X`) |
+| `localizacao` | string \| null | Cidade/bairro/UF (pode ser null no ML) |
+| `data` | string \| null | Data legível (null no ML — não exposta nos cards) |
+| `url` | string | URL canônica do anúncio |
+| `imagem` | string \| null | URL da imagem principal |
+
+**Específicos da OLX:** `categoria`, `bairro`, `profissional`, `entrega_olx`, `propriedades`.
+**Específicos do ML:** `frete`, `vendedor`, `atributos`.
+
+**Envelope da resposta:** `fonte`, `total`, `pagina`, `por_pagina`, `url_busca`, `anuncios`, `avisos` (opcional).
+
 ## Campo `fonte` na resposta
 
 Toda resposta inclui um campo `fonte` no envelope (e em cada anúncio) indicando a origem dos dados:
