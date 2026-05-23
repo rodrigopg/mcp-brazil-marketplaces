@@ -1,6 +1,9 @@
 """
-OLX Brasil MCP Server
-Busca anúncios públicos da OLX Brasil via scraping do __NEXT_DATA__.
+MCP server para marketplaces brasileiros.
+
+Tools disponíveis:
+- olx_buscar_anuncios / olx_detalhe_anuncio — OLX Brasil (scraping __NEXT_DATA__)
+- ml_buscar_anuncios — Mercado Livre Brasil (scraping HTML via UA Googlebot)
 """
 
 import asyncio
@@ -18,8 +21,15 @@ import httpx
 from mcp.server.fastmcp import FastMCP
 from pydantic import BaseModel, ConfigDict, Field
 
-logger = logging.getLogger("olx_mcp")
-_log_level = os.getenv("OLX_MCP_LOG_LEVEL", "WARNING").upper()
+logger = logging.getLogger("mcp_brazil_marketplaces")
+
+
+def _env(name: str, default: str = "") -> str:
+    """Lê env preferindo MCP_BR_<NAME>, com fallback ao legado OLX_MCP_<NAME>."""
+    return os.getenv(f"MCP_BR_{name}", os.getenv(f"OLX_MCP_{name}", default))
+
+
+_log_level = _env("LOG_LEVEL", "WARNING").upper()
 if _log_level in ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"):
     logging.basicConfig(level=_log_level)
     logger.setLevel(_log_level)
@@ -28,7 +38,7 @@ if _log_level in ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"):
 # Feature flags via env
 # ---------------------------------------------------------------------------
 
-DISABLE_JINA = os.getenv("OLX_MCP_DISABLE_JINA", "0").lower() in ("1", "true", "yes")
+DISABLE_JINA = _env("DISABLE_JINA", "0").lower() in ("1", "true", "yes")
 ALLOWED_OLX_HOSTS = (".olx.com.br",)
 
 # ---------------------------------------------------------------------------
@@ -97,35 +107,35 @@ def _build_headers(
     return h
 
 
-def _env_float(key: str, default: float, lo: float, hi: float) -> float:
-    """Lê env var como float com clamp e fallback silencioso."""
-    raw = os.getenv(key)
+def _env_float(name: str, default: float, lo: float, hi: float) -> float:
+    """Lê env (MCP_BR_<NAME>, fallback OLX_MCP_<NAME>) como float com clamp."""
+    raw = _env(name)
     if not raw:
         return default
     try:
         v = float(raw)
     except ValueError:
-        logger.warning("Env %s inválido (%r), usando default %s", key, raw, default)
+        logger.warning("Env %s inválido (%r), usando default %s", name, raw, default)
         return default
     return max(lo, min(hi, v))
 
 
-def _env_int(key: str, default: int, lo: int, hi: int) -> int:
-    raw = os.getenv(key)
+def _env_int(name: str, default: int, lo: int, hi: int) -> int:
+    raw = _env(name)
     if not raw:
         return default
     try:
         v = int(raw)
     except ValueError:
-        logger.warning("Env %s inválido (%r), usando default %s", key, raw, default)
+        logger.warning("Env %s inválido (%r), usando default %s", name, raw, default)
         return default
     return max(lo, min(hi, v))
 
 
-REQUEST_TIMEOUT = _env_float("OLX_MCP_REQUEST_TIMEOUT", 25.0, 1.0, 300.0)
+REQUEST_TIMEOUT = _env_float("REQUEST_TIMEOUT", 25.0, 1.0, 300.0)
 HTTP2 = True  # Obrigatório: OLX retorna 403 em HTTP/1.1
-MAX_RETRIES = _env_int("OLX_MCP_MAX_RETRIES", 4, 0, 20)
-WARMUP_PROBABILITY = _env_float("OLX_MCP_WARMUP_PROBABILITY", 0.7, 0.0, 1.0)
+MAX_RETRIES = _env_int("MAX_RETRIES", 4, 0, 20)
+WARMUP_PROBABILITY = _env_float("WARMUP_PROBABILITY", 0.7, 0.0, 1.0)
 
 ESTADOS = {
     "ac",
@@ -161,7 +171,7 @@ ESTADOS = {
 # Inicialização
 # ---------------------------------------------------------------------------
 
-mcp = FastMCP("olx_mcp")
+mcp = FastMCP("mcp_brazil_marketplaces")
 
 
 # ---------------------------------------------------------------------------
@@ -588,7 +598,7 @@ async def olx_buscar_anuncios(params: BuscarAnunciosInput) -> str:
     except Exception:
         if DISABLE_JINA:
             return json.dumps(
-                {"erro": "Erro: acesso negado e fallback Jina desabilitado (OLX_MCP_DISABLE_JINA=1)."},
+                {"erro": "Erro: acesso negado e fallback Jina desabilitado (MCP_BR_DISABLE_JINA=1)."},
                 ensure_ascii=False,
             )
         # Fallback markdown via r.jina.ai
@@ -671,7 +681,7 @@ async def olx_detalhe_anuncio(params: DetalheAnuncioInput) -> str:
     except Exception:
         if DISABLE_JINA:
             return json.dumps(
-                {"erro": "Erro: acesso negado e fallback Jina desabilitado (OLX_MCP_DISABLE_JINA=1)."},
+                {"erro": "Erro: acesso negado e fallback Jina desabilitado (MCP_BR_DISABLE_JINA=1)."},
                 ensure_ascii=False,
             )
         try:
@@ -782,11 +792,11 @@ ML_BASE = "https://lista.mercadolivre.com.br"
 
 # UA Googlebot bypassa o micro-landing anti-bot do ML. Operadores que
 # considerem o spoof inaceitável (risco ético/legal) podem sobrescrever
-# via OLX_MCP_ML_USER_AGENT — nesse caso o ML geralmente devolve a
+# via MCP_BR_ML_USER_AGENT — nesse caso o ML geralmente devolve a
 # página de challenge e a tool retorna lista vazia, mas sem spoof.
 _ML_DEFAULT_UA = "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)"
 ML_HEADERS = {
-    "User-Agent": os.getenv("OLX_MCP_ML_USER_AGENT") or _ML_DEFAULT_UA,
+    "User-Agent": _env("ML_USER_AGENT") or _ML_DEFAULT_UA,
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8",
 }
@@ -982,7 +992,7 @@ async def ml_buscar_anuncios(params: BuscarMLInput) -> str:
 
 
 def main() -> None:
-    """Entry point para `olx-mcp` console_script e `python -m olx_mcp`."""
+    """Entry point para `mcp-brazil-marketplaces` console_script e `python -m mcp_brazil_marketplaces`."""
     mcp.run()
 
 

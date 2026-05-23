@@ -3,13 +3,25 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "olx-mcp"
-version = "0.2.0"
-description = "MCP server para buscar anúncios públicos da OLX Brasil e Mercado Livre"
+name = "mcp-brazil-marketplaces"
+version = "0.3.0"
+description = "MCP server para buscar anúncios em marketplaces brasileiros (OLX, Mercado Livre)"
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.10"
-keywords = ["mcp", "olx", "brasil", "scraping", "model-context-protocol"]
+keywords = [
+    "mcp",
+    "model-context-protocol",
+    "marketplace",
+    "brazil",
+    "brasil",
+    "olx",
+    "mercadolivre",
+    "mercado-livre",
+    "classifieds",
+    "scraping",
+    "ecommerce",
+]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -29,15 +41,15 @@ dependencies = [
 ]
 
 [project.scripts]
-olx-mcp = "olx_mcp.server:main"
+mcp-brazil-marketplaces = "mcp_brazil_marketplaces.server:main"
 
 [project.urls]
-Homepage = "https://github.com/rodrigopg/olx-mcp"
-Repository = "https://github.com/rodrigopg/olx-mcp"
-Issues = "https://github.com/rodrigopg/olx-mcp/issues"
+Homepage = "https://github.com/rodrigopg/mcp-brazil-marketplaces"
+Repository = "https://github.com/rodrigopg/mcp-brazil-marketplaces"
+Issues = "https://github.com/rodrigopg/mcp-brazil-marketplaces/issues"
 
 [tool.hatch.build.targets.wheel]
-packages = ["olx_mcp"]
+packages = ["mcp_brazil_marketplaces"]
 
 [project.optional-dependencies]
 dev = [

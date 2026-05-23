@@ -1,25 +1,26 @@
-# CLAUDE.md — OLX MCP Server
+# CLAUDE.md — mcp-brazil-marketplaces
 
 ## Project Overview
 
-This is an **MCP (Model Context Protocol) server** that provides tools for searching and retrieving public listings from **OLX Brasil** (a major Brazilian online marketplace). It works by scraping the `__NEXT_DATA__` JSON embedded in OLX's Next.js pages.
+MCP server que expõe tools para buscar anúncios em marketplaces brasileiros (OLX e Mercado Livre). Faz scraping de páginas públicas e devolve JSON estruturado.
 
 **Language:** Python 3.10+
-**Framework:** FastMCP (from the `mcp` package)
-**Transport:** stdio (default MCP transport via `mcp.run()`)
+**Framework:** FastMCP (do pacote `mcp`)
+**Transport:** stdio (default MCP via `mcp.run()`)
+**PyPI:** `mcp-brazil-marketplaces` (import: `mcp_brazil_marketplaces`)
 
 ---
 
 ## Repository Structure
 
 ```
-olx-mcp/
-├── server.py           # Entire application — all code lives here
-├── requirements.txt    # Python dependencies
-└── .venv/              # Virtualenv (created locally, not committed)
+mcp-brazil-marketplaces/
+├── mcp_brazil_marketplaces/   # Pacote Python (server.py + entry points)
+├── tests/                     # Unit tests (sem rede) + tests/integration/
+├── pyproject.toml             # Metadata + deps + ruff/pytest config
+├── .github/workflows/ci.yml   # CI: ruff + pytest + build, Python 3.10-3.13
+└── requirements.txt           # Alias para deps; pyproject é a fonte
 ```
-
-This is a single-file project. Do not create unnecessary new files.
 
 ---
 
@@ -27,13 +28,15 @@ This is a single-file project. Do not create unnecessary new files.
 
 ```bash
 python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
+.venv/bin/pip install -e ".[dev]"
 ```
 
 ## Running the Server
 
 ```bash
-.venv/bin/python server.py
+.venv/bin/mcp-brazil-marketplaces
+# ou
+.venv/bin/python -m mcp_brazil_marketplaces
 ```
 
 The server runs via stdio transport (default for MCP). To integrate with an MCP-compatible client (e.g., Claude Desktop), configure the client to spawn this process.
@@ -60,7 +63,7 @@ pydantic>=2.0.0      # Input validation via BaseModel
    - Browser-mimicking headers are intentional and required for OLX to respond
    - `ESTADOS` is a set of valid Brazilian state abbreviations (lowercase, 2 chars)
 
-2. **MCP instance** — `mcp = FastMCP("olx_mcp")`
+2. **MCP instance** — `mcp = FastMCP("mcp_brazil_marketplaces")`
 
 3. **Input models** (Pydantic `BaseModel`)
    - `OrdenarPor`: Enum for sort order (`relevance`, `price`, `date`)
