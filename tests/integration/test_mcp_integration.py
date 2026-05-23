@@ -51,7 +51,7 @@ async def main():
     proc = await asyncio.create_subprocess_exec(
         sys.executable,
         "-m",
-        "olx_mcp.server",
+        "mcp_brazil_marketplaces.server",
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.DEVNULL,

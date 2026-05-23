@@ -4,15 +4,15 @@
 
 Se você encontrou uma vulnerabilidade de segurança neste projeto, **não abra uma issue pública**. Em vez disso:
 
-1. Use o [GitHub Security Advisories](https://github.com/rodrigopg/olx-mcp/security/advisories/new) (**preferencial**) — canal privado integrado ao repositório.
-2. Ou envie e-mail para **rodrigo.pgoncalves@totvs.com.br** com o assunto `[security] olx-mcp`.
+1. Use o [GitHub Security Advisories](https://github.com/rodrigopg/mcp-brazil-marketplaces/security/advisories/new) (**preferencial**) — canal privado integrado ao repositório.
+2. Ou envie e-mail para **rodrigo.pgoncalves@totvs.com.br** com o assunto `[security] mcp-brazil-marketplaces`.
 
 Inclua no report:
 
 - Descrição da vulnerabilidade
 - Passos para reproduzir
 - Impacto estimado (DoS, SSRF, RCE, leak, etc.)
-- Versão afetada do `olx-mcp`
+- Versão afetada do `mcp-brazil-marketplaces`
 - Sugestão de correção, se houver
 
 ## Tempo de resposta

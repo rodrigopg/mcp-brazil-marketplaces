@@ -5,7 +5,7 @@ import os
 
 import pytest
 
-from olx_mcp.server import (
+from mcp_brazil_marketplaces.server import (
     ALLOWED_OLX_HOSTS,
     MAX_HTML_BYTES,
     MAX_NEXT_DATA_BYTES,
@@ -208,56 +208,65 @@ class TestExtractNextData:
 
 class TestMlUserAgentOverride:
     def test_default_is_googlebot(self):
-        from olx_mcp.server import _ML_DEFAULT_UA, ML_HEADERS
+        from mcp_brazil_marketplaces.server import _ML_DEFAULT_UA, ML_HEADERS
 
         # Em ambiente de teste padrão (sem env), UA deve ser googlebot
-        if not os.environ.get("OLX_MCP_ML_USER_AGENT"):
+        if not os.environ.get("MCP_BR_ML_USER_AGENT"):
             assert ML_HEADERS["User-Agent"] == _ML_DEFAULT_UA
             assert "Googlebot" in _ML_DEFAULT_UA
 
     def test_env_override_applied_on_reimport(self, monkeypatch):
         import importlib
 
-        monkeypatch.setenv("OLX_MCP_ML_USER_AGENT", "MyCustomBot/1.0")
-        import olx_mcp.server as srv
+        monkeypatch.setenv("MCP_BR_ML_USER_AGENT", "MyCustomBot/1.0")
+        import mcp_brazil_marketplaces.server as srv
 
         importlib.reload(srv)
         try:
             assert srv.ML_HEADERS["User-Agent"] == "MyCustomBot/1.0"
         finally:
-            monkeypatch.delenv("OLX_MCP_ML_USER_AGENT", raising=False)
+            monkeypatch.delenv("MCP_BR_ML_USER_AGENT", raising=False)
             importlib.reload(srv)
 
 
 class TestEnvHelpers:
     def test_env_float_default_when_unset(self, monkeypatch):
-        from olx_mcp.server import _env_float
+        from mcp_brazil_marketplaces.server import _env_float
 
-        monkeypatch.delenv("X_TEST_FLOAT", raising=False)
-        assert _env_float("X_TEST_FLOAT", 1.5, 0.0, 10.0) == 1.5
+        monkeypatch.delenv("MCP_BR_TEST_FLOAT", raising=False)
+        monkeypatch.delenv("OLX_MCP_TEST_FLOAT", raising=False)
+        assert _env_float("TEST_FLOAT", 1.5, 0.0, 10.0) == 1.5
 
     def test_env_float_clamps_high(self, monkeypatch):
-        from olx_mcp.server import _env_float
+        from mcp_brazil_marketplaces.server import _env_float
 
-        monkeypatch.setenv("X_TEST_FLOAT", "999")
-        assert _env_float("X_TEST_FLOAT", 1.0, 0.0, 10.0) == 10.0
+        monkeypatch.setenv("MCP_BR_TEST_FLOAT", "999")
+        assert _env_float("TEST_FLOAT", 1.0, 0.0, 10.0) == 10.0
 
     def test_env_float_invalid_falls_back(self, monkeypatch):
-        from olx_mcp.server import _env_float
+        from mcp_brazil_marketplaces.server import _env_float
 
-        monkeypatch.setenv("X_TEST_FLOAT", "abc")
-        assert _env_float("X_TEST_FLOAT", 2.0, 0.0, 10.0) == 2.0
+        monkeypatch.setenv("MCP_BR_TEST_FLOAT", "abc")
+        assert _env_float("TEST_FLOAT", 2.0, 0.0, 10.0) == 2.0
 
     def test_env_int_clamps_low(self, monkeypatch):
-        from olx_mcp.server import _env_int
+        from mcp_brazil_marketplaces.server import _env_int
 
-        monkeypatch.setenv("X_TEST_INT", "-50")
-        assert _env_int("X_TEST_INT", 5, 0, 20) == 0
+        monkeypatch.setenv("MCP_BR_TEST_INT", "-50")
+        assert _env_int("TEST_INT", 5, 0, 20) == 0
+
+    def test_legacy_olx_mcp_prefix_still_works(self, monkeypatch):
+        """Compat: aceita OLX_MCP_* como fallback."""
+        from mcp_brazil_marketplaces.server import _env_int
+
+        monkeypatch.delenv("MCP_BR_LEGACY_TEST", raising=False)
+        monkeypatch.setenv("OLX_MCP_LEGACY_TEST", "7")
+        assert _env_int("LEGACY_TEST", 1, 0, 100) == 7
 
 
 class TestErrorMessages:
     def test_handle_unknown_exception_returns_correlation_id(self):
-        from olx_mcp.server import _handle_http_error
+        from mcp_brazil_marketplaces.server import _handle_http_error
 
         class WeirdError(Exception):
             pass
@@ -277,7 +286,7 @@ class TestErrorMessages:
         assert "STACKTRACE_INTERNO_VAZA" not in msg
 
     def test_handle_validation_keeps_message(self):
-        from olx_mcp.server import _handle_http_error
+        from mcp_brazil_marketplaces.server import _handle_http_error
 
         msg = _handle_http_error(ValueError("estado inválido"))
         assert "estado inválido" in msg
@@ -287,7 +296,7 @@ def _handle_http_error_wrapper(resp):
     """Helper: simula HTTPStatusError do httpx."""
     import httpx
 
-    from olx_mcp.server import _handle_http_error
+    from mcp_brazil_marketplaces.server import _handle_http_error
 
     err = httpx.HTTPStatusError("boom", request=resp.request, response=resp)
     return _handle_http_error(err)

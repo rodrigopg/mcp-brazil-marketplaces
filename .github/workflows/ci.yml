@@ -55,4 +55,4 @@ jobs:
       - name: Smoke install + import
         run: |
           python -m pip install dist/*.whl
-          python -c "from olx_mcp.server import main, olx_buscar_anuncios, ml_buscar_anuncios; print('OK')"
+          python -c "from mcp_brazil_marketplaces.server import main, olx_buscar_anuncios, ml_buscar_anuncios; print('OK')"
