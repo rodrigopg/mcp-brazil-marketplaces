@@ -137,6 +137,61 @@ HTTP2 = True  # Obrigatório: OLX retorna 403 em HTTP/1.1
 MAX_RETRIES = _env_int("MAX_RETRIES", 4, 0, 20)
 WARMUP_PROBABILITY = _env_float("WARMUP_PROBABILITY", 0.7, 0.0, 1.0)
 
+# Rate limit por host: protege IP do operador contra loops do LLM que
+# fariam queimar o IP em <30s. Semáforo limita concorrência;
+# `_HOST_MIN_GAP` impõe atraso mínimo entre chamadas ao mesmo host.
+RATE_LIMIT_CONCURRENCY = _env_int("RATE_LIMIT_CONCURRENCY", 2, 1, 16)
+RATE_LIMIT_MIN_GAP = _env_float("RATE_LIMIT_MIN_GAP", 0.5, 0.0, 30.0)
+
+_rate_semaphore = asyncio.Semaphore(RATE_LIMIT_CONCURRENCY)
+_host_last_request: dict[str, float] = {}
+_host_lock = asyncio.Lock()
+
+
+async def _rate_limit(host: str) -> None:
+    """Adquire slot global + força gap mínimo por host.
+
+    Não é contador de janela deslizante — é um throttle simples
+    suficiente para evitar que um LLM em loop dispare 100 requests/s.
+    Operadores podem desabilitar via MCP_BR_RATE_LIMIT_MIN_GAP=0.
+    """
+    await _rate_semaphore.acquire()
+    if RATE_LIMIT_MIN_GAP <= 0:
+        return
+    async with _host_lock:
+        now = asyncio.get_event_loop().time()
+        prev = _host_last_request.get(host, 0.0)
+        wait = RATE_LIMIT_MIN_GAP - (now - prev)
+        if wait > 0:
+            await asyncio.sleep(wait)
+        _host_last_request[host] = asyncio.get_event_loop().time()
+
+
+def _rate_release() -> None:
+    _rate_semaphore.release()
+
+
+class _RateGate:
+    """Context manager async: rate-limit por host com release garantido."""
+
+    def __init__(self, url: str) -> None:
+        self.host = _host_of(url)
+
+    async def __aenter__(self) -> "_RateGate":
+        await _rate_limit(self.host)
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        _rate_release()
+
+
+def _host_of(url: str) -> str:
+    try:
+        return (urlparse(url).hostname or "").lower()
+    except Exception:
+        return ""
+
+
 ESTADOS = {
     "ac",
     "al",
@@ -377,51 +432,52 @@ async def _fetch_with_evasion(url: str, referer_override: str | None = None) -> 
     """
     last_exc: Exception | None = None
 
-    for attempt in range(MAX_RETRIES):
-        profile = random.choice(BROWSER_PROFILES)
-        cookies = httpx.Cookies()
+    async with _RateGate(url):
+        for attempt in range(MAX_RETRIES):
+            profile = random.choice(BROWSER_PROFILES)
+            cookies = httpx.Cookies()
 
-        try:
-            async with httpx.AsyncClient(
-                follow_redirects=True,
-                timeout=REQUEST_TIMEOUT,
-                http2=HTTP2,
-                cookies=cookies,
-            ) as client:
-                # Warm-up: visita homepage para coletar cookies de sessão / anti-bot
-                if attempt == 0 or random.random() < WARMUP_PROBABILITY:
-                    try:
-                        warm_headers = _build_headers(
-                            profile, referer="https://www.google.com/", same_origin=False
-                        )
-                        await client.get(BASE_URL + "/", headers=warm_headers)
-                        await asyncio.sleep(random.uniform(0.4, 1.2))
-                    except Exception:
-                        pass  # warm-up best-effort
+            try:
+                async with httpx.AsyncClient(
+                    follow_redirects=True,
+                    timeout=REQUEST_TIMEOUT,
+                    http2=HTTP2,
+                    cookies=cookies,
+                ) as client:
+                    if attempt == 0 or random.random() < WARMUP_PROBABILITY:
+                        try:
+                            warm_headers = _build_headers(
+                                profile, referer="https://www.google.com/", same_origin=False
+                            )
+                            await client.get(BASE_URL + "/", headers=warm_headers)
+                            await asyncio.sleep(random.uniform(0.4, 1.2))
+                        except Exception:
+                            pass
 
-                ref = referer_override or (
-                    BASE_URL + "/" if random.random() < 0.5 else "https://www.google.com/"
-                )
-                same_origin = ref.startswith(BASE_URL)
-                headers = _build_headers(profile, referer=ref, same_origin=same_origin)
-
-                resp = await client.get(url, headers=headers)
-                if resp.status_code in (403, 429):
-                    last_exc = httpx.HTTPStatusError(
-                        f"status {resp.status_code}", request=resp.request, response=resp
+                    ref = referer_override or (
+                        BASE_URL + "/" if random.random() < 0.5 else "https://www.google.com/"
                     )
-                    await asyncio.sleep((2**attempt) + random.uniform(0.3, 1.5))
-                    continue
-                resp.raise_for_status()
-                return resp.text
-        except httpx.HTTPStatusError as e:
-            last_exc = e
-            if e.response.status_code not in (403, 429, 503):
-                raise
-            await asyncio.sleep((2**attempt) + random.uniform(0.3, 1.5))
-        except (httpx.TimeoutException, httpx.TransportError) as e:
-            last_exc = e
-            await asyncio.sleep((2**attempt) + random.uniform(0.2, 0.8))
+                    same_origin = ref.startswith(BASE_URL)
+                    headers = _build_headers(profile, referer=ref, same_origin=same_origin)
+
+                    resp = await client.get(url, headers=headers)
+                    if resp.status_code in (403, 429):
+                        last_exc = httpx.HTTPStatusError(
+                            f"status {resp.status_code}", request=resp.request, response=resp
+                        )
+                        logger.debug("retry %s: status %s p/ %s", attempt, resp.status_code, url)
+                        await asyncio.sleep((2**attempt) + random.uniform(0.3, 1.5))
+                        continue
+                    resp.raise_for_status()
+                    return resp.text
+            except httpx.HTTPStatusError as e:
+                last_exc = e
+                if e.response.status_code not in (403, 429, 503):
+                    raise
+                await asyncio.sleep((2**attempt) + random.uniform(0.3, 1.5))
+            except (httpx.TimeoutException, httpx.TransportError) as e:
+                last_exc = e
+                await asyncio.sleep((2**attempt) + random.uniform(0.2, 0.8))
 
     if last_exc:
         raise last_exc
@@ -431,10 +487,14 @@ async def _fetch_with_evasion(url: str, referer_override: str | None = None) -> 
 async def _fetch_via_jina(url: str) -> str:
     """Fallback usando r.jina.ai como proxy reader. Retorna markdown."""
     proxy_url = f"https://r.jina.ai/{url}"
-    async with httpx.AsyncClient(follow_redirects=True, timeout=REQUEST_TIMEOUT) as client:
-        resp = await client.get(proxy_url, headers={"Accept": "text/markdown", "X-Return-Format": "markdown"})
-        resp.raise_for_status()
-        return resp.text
+    async with _RateGate(proxy_url):
+        async with httpx.AsyncClient(follow_redirects=True, timeout=REQUEST_TIMEOUT) as client:
+            resp = await client.get(
+                proxy_url,
+                headers={"Accept": "text/markdown", "X-Return-Format": "markdown"},
+            )
+            resp.raise_for_status()
+            return resp.text
 
 
 def _parse_search_markdown(md: str, url_busca: str) -> dict:
@@ -942,10 +1002,13 @@ async def ml_buscar_anuncios(params: BuscarMLInput) -> str:
     """
     url, avisos = _build_ml_url(params)
     try:
-        async with httpx.AsyncClient(follow_redirects=True, timeout=REQUEST_TIMEOUT, http2=HTTP2) as client:
-            resp = await client.get(url, headers=ML_HEADERS)
-            resp.raise_for_status()
-            html = resp.text
+        async with _RateGate(url):
+            async with httpx.AsyncClient(
+                follow_redirects=True, timeout=REQUEST_TIMEOUT, http2=HTTP2
+            ) as client:
+                resp = await client.get(url, headers=ML_HEADERS)
+                resp.raise_for_status()
+                html = resp.text
     except Exception as e:
         return json.dumps({"erro": _handle_http_error(e), "url_busca": url}, ensure_ascii=False)
 

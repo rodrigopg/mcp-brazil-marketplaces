@@ -164,6 +164,8 @@ Todos os parâmetros operacionais podem ser ajustados via env (com clamp seguro)
 | `MCP_BR_DISABLE_JINA` | `0` | `0`/`1` | Desabilita fallback via `r.jina.ai` |
 | `MCP_BR_LOG_LEVEL` | `WARNING` | `DEBUG`/`INFO`/`WARNING`/`ERROR` | Nível do logger `mcp_brazil_marketplaces` |
 | `MCP_BR_ML_USER_AGENT` | (Googlebot) | qualquer string | Sobrescreve UA usado no Mercado Livre. Use se o spoof de Googlebot for inaceitável — ML geralmente devolverá a página anti-bot e a tool retornará lista vazia. |
+| `MCP_BR_RATE_LIMIT_CONCURRENCY` | `2` | 1–16 | Máx. de requests HTTP simultâneos |
+| `MCP_BR_RATE_LIMIT_MIN_GAP` | `0.5` | 0.0–30.0 | Gap mínimo em segundos entre requests ao mesmo host. `0` desabilita |
 
 ## Privacidade e considerações
 

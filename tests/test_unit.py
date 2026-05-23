@@ -302,6 +302,52 @@ def _handle_http_error_wrapper(resp):
     return _handle_http_error(err)
 
 
+class TestRateLimit:
+    @pytest.mark.asyncio
+    async def test_min_gap_enforced(self, monkeypatch):
+        """Duas chamadas sequenciais ao mesmo host respeitam MCP_BR_RATE_LIMIT_MIN_GAP."""
+        import importlib
+
+        monkeypatch.setenv("MCP_BR_RATE_LIMIT_MIN_GAP", "0.3")
+        monkeypatch.setenv("MCP_BR_RATE_LIMIT_CONCURRENCY", "8")
+        import mcp_brazil_marketplaces.server as srv
+
+        importlib.reload(srv)
+        try:
+            import time
+
+            t0 = time.monotonic()
+            await srv._rate_limit("example.com")
+            srv._rate_release()
+            await srv._rate_limit("example.com")
+            srv._rate_release()
+            elapsed = time.monotonic() - t0
+            assert elapsed >= 0.28, f"sem gap: {elapsed:.3f}s"
+        finally:
+            monkeypatch.delenv("MCP_BR_RATE_LIMIT_MIN_GAP", raising=False)
+            monkeypatch.delenv("MCP_BR_RATE_LIMIT_CONCURRENCY", raising=False)
+            importlib.reload(srv)
+
+    @pytest.mark.asyncio
+    async def test_min_gap_zero_disables(self, monkeypatch):
+        import importlib
+        import time
+
+        monkeypatch.setenv("MCP_BR_RATE_LIMIT_MIN_GAP", "0")
+        import mcp_brazil_marketplaces.server as srv
+
+        importlib.reload(srv)
+        try:
+            t0 = time.monotonic()
+            for _ in range(5):
+                await srv._rate_limit("h")
+                srv._rate_release()
+            assert time.monotonic() - t0 < 0.1
+        finally:
+            monkeypatch.delenv("MCP_BR_RATE_LIMIT_MIN_GAP", raising=False)
+            importlib.reload(srv)
+
+
 class TestSchemaConsistency:
     """Garante que toda resposta de tool tem campo `fonte` para o LLM."""
 
