@@ -216,6 +216,10 @@ Todos os parâmetros operacionais podem ser ajustados via env (com clamp seguro)
 
 - **Scraping de dados públicos:** este servidor consulta dados públicos da OLX e do Mercado Livre. Use com responsabilidade e respeite os termos de uso de cada site.
 
+## Roadmap
+
+Próximos passos rastreados em [`ROADMAP.md`](ROADMAP.md) + [milestones do GitHub](https://github.com/rodrigopg/mcp-brazil-marketplaces/milestones). Há 31 itens organizados em 5 milestones (v0.4 → v1.0 + future).
+
 ## Release
 
 Releases para o PyPI são automatizados via [Trusted Publishing](https://docs.pypi.org/trusted-publishers/) (OIDC) — sem tokens armazenados. Workflow `.github/workflows/release.yml` dispara em tags `v*`.
