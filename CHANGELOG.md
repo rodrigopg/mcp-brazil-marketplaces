@@ -11,6 +11,8 @@ e este projeto adere a [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 - Branch protection nativa na `main` com PR obrigatório + CI verde (5 status checks).
 - Badges no README (PyPI version, Python versions, downloads, CI, license, ruff).
 - Este `CHANGELOG.md`.
+- Workflow `release.yml` para publicação via PyPI Trusted Publishing (OIDC) — sem tokens armazenados.
+- `ROADMAP.md` com 31 itens em 5 milestones (`v0.4`, `v0.5`, `v0.6`, `v1.0`, `future`).
 
 ## [0.3.0] — 2026-05-22
 
