@@ -54,8 +54,10 @@ Site comprometido pode injetar tipos errados no JSON. Toda extração passa por 
 
 ```python
 def _safe_str(v, max_len=500) -> str | None:
-    if isinstance(v, str): return v[:max_len]
-    if isinstance(v, (int, float, bool)): return str(v)[:max_len]
+    if isinstance(v, str):
+        return v[:max_len]
+    if isinstance(v, (int, float, bool)):
+        return str(v)[:max_len]
     return None  # dict/list = descarta
 ```
 

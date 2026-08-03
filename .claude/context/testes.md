@@ -23,10 +23,13 @@ markers = ["integration: testes que dependem de rede"]
 ### SSRF guard (parametrize)
 
 ```python
-@pytest.mark.parametrize("url", [
-    "http://169.254.169.254/...",
-    "https://olx.com.br.evil.com/x",
-])
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://169.254.169.254/...",
+        "https://olx.com.br.evil.com/x",
+    ],
+)
 def test_reject_unsafe(self, url):
     with pytest.raises(ValueError):
         _validar_url_olx(url)
@@ -49,8 +52,10 @@ Env é lido no module load. Para testar override, `monkeypatch.setenv` + `import
 ```python
 def test_env_override(self, monkeypatch):
     import importlib
+
     monkeypatch.setenv("MCP_BR_TEST_FLOAT", "999")
     import mcp_brazil_marketplaces.server as srv
+
     importlib.reload(srv)
     try:
         assert srv._env_float("TEST_FLOAT", 1.0, 0.0, 10.0) == 10.0
@@ -64,12 +69,16 @@ def test_env_override(self, monkeypatch):
 @pytest.mark.asyncio
 async def test_min_gap_enforced(self, monkeypatch):
     import importlib, time
+
     monkeypatch.setenv("MCP_BR_RATE_LIMIT_MIN_GAP", "0.3")
     import mcp_brazil_marketplaces.server as srv
+
     importlib.reload(srv)
     t0 = time.monotonic()
-    await srv._rate_limit("h"); srv._rate_release()
-    await srv._rate_limit("h"); srv._rate_release()
+    await srv._rate_limit("h")
+    srv._rate_release()
+    await srv._rate_limit("h")
+    srv._rate_release()
     assert time.monotonic() - t0 >= 0.28
 ```
 
@@ -87,10 +96,13 @@ Padrão: gerar payload grande, medir tempo:
 
 ```python
 import time
+
 payload = '<script id="__NEXT_DATA__">' + "a" * 1_000_000
 t0 = time.monotonic()
-try: _extract_next_data(payload)
-except ValueError: pass
+try:
+    _extract_next_data(payload)
+except ValueError:
+    pass
 assert time.monotonic() - t0 < 1.5
 ```
 
