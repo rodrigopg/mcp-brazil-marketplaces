@@ -75,7 +75,7 @@ Reinicie o Claude Desktop. As ferramentas `olx_buscar_anuncios`, `olx_detalhe_an
 **Claude Code (CLI, sem plugin):**
 
 ```bash
-claude mcp add olx -- uvx mcp-brazil-marketplaces
+claude mcp add marketplaces-br -- uvx mcp-brazil-marketplaces
 ```
 
 **Cursor** (`~/.cursor/mcp.json`) e **Continue** (`~/.continue/config.json`) usam o mesmo bloco JSON do Claude Desktop.
