@@ -1,21 +1,9 @@
 {
   "name": "mcp-brazil-marketplaces",
   "description": "Search public listings on OLX Brasil and Mercado Livre from Claude — MCP server with automatic anti-bot bypass (UA rotation, cookie warm-up, retry with backoff, r.jina.ai fallback)",
-  "author": {
-    "name": "Rodrigo Gonçalves",
-    "url": "https://github.com/rodrigopg"
-  },
+  "author": { "name": "Rodrigo Gonçalves" },
   "repository": "https://github.com/rodrigopg/mcp-brazil-marketplaces",
   "license": "MIT",
-  "keywords": [
-    "mcp",
-    "olx",
-    "mercado-livre",
-    "marketplace",
-    "brazil",
-    "scraping",
-    "search"
-  ],
   "mcpServers": {
     "marketplaces-br": {
       "command": "uvx",
