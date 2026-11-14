@@ -424,7 +424,11 @@ def _parse_olx_ad(ad: dict, url: str) -> dict:
     loc = _safe_dict(ad.get("location"))
     body = _TAG_RE.sub("", _BR_RE.sub("\n", _safe_str(ad.get("body"), 20000) or "")).strip()
     props = [
-        {"nome": _safe_str(_safe_dict(x).get("name")), "valor": _safe_str(_safe_dict(x).get("value"))}
+        {
+            "nome": _safe_str(_safe_dict(x).get("label")) or _safe_str(_safe_dict(x).get("name")),
+            "chave": _safe_str(_safe_dict(x).get("name")),
+            "valor": _safe_str(_safe_dict(x).get("value")),
+        }
         for x in _safe_list(ad.get("properties"))[:_PROPS_MAX]
     ]
     imgs = [
@@ -971,7 +975,7 @@ async def _olx_liveness(url: str) -> dict:
         return {
             "url": url,
             "status": "blocked",
-            "dica": "OLX bloqueou a checagem; abra a URL no navegador ou use olx_detalhe_anuncio.",
+            "dica": "OLX bloqueou esta checagem (IP/cliente automatizado). Confirme abrindo a URL no navegador.",
         }
     return {"url": url, "status": "ativo" if code == 200 else "erro", "http": code}
 

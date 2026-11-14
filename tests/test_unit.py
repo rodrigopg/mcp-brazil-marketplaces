@@ -448,11 +448,11 @@ class TestOlxInitialData:
         from mcp_brazil_marketplaces.server import _extract_initial_data, _parse_olx_ad
 
         r = _parse_olx_ad(_extract_initial_data(self._html()), "https://go.olx.com.br/x")
-        assert r["status"] == "ok" and r["preco"] == "R$ 10.500" and r["preco_antigo"] == "R$ 12.500"
-        assert r["descricao"] == "Impecável\nRAM 24GB\nnota"
-        assert r["propriedades"]["Memória RAM"] == "32GB"  # contradiz a descrição: exposto cru
-        assert r["municipio"] == "Goiânia" and r["estado"] == "GO"
-        assert r["imagens"] == ["https://img.olx.com.br/images/1.jpg"]
+        assert r["status"] == "ok" and r["preco"] == "R$ 6.650" and r["preco_antigo"] == "R$ 7.399"
+        assert r["descricao"] == "MacBook Air M4 ?13.3? 16/256\nRAM 24GB"
+        assert r["propriedades"]["Modelo do Processador"] == "Apple M3"  # título diz M4: exposto cru
+        assert r["municipio"] == "Aparecida de Goiânia" and r["estado"] == "GO" and r["profissional"]
+        assert r["imagens"] == ["https://img.olx.com.br/images/28/287590441934028.jpg"]
 
     def test_missing_initial_data_raises(self):
         from mcp_brazil_marketplaces.server import _extract_initial_data
