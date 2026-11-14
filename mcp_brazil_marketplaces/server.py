@@ -513,6 +513,10 @@ _SPEC_SSD_RE = re.compile(r"\b(\d{1,4})\s?(gb|tb)\s*(?:de\s*)?ssd\b", re.IGNOREC
 _SPEC_PAIR_RE = re.compile(r"\b(\d{1,2})\s?(?:gb)?\s?/\s?(\d{3,4})\s?(?:gb)?\b", re.IGNORECASE)
 
 
+_SPEC_GB_RE = re.compile(r"\b(\d{1,3})\s?gb\b", re.IGNORECASE)
+_RAM_SIZES = {8, 16, 18, 24, 32, 36, 48, 64, 96, 128}
+
+
 def _extract_specs(text: str) -> dict:
     """Chip/RAM/SSD inferidos do texto (título). Heurística — o anúncio pode se contradizer."""
     text = text[:2000]
@@ -526,6 +530,12 @@ def _extract_specs(text: str) -> dict:
     if m := _SPEC_PAIR_RE.search(text):
         out.setdefault("ram_gb", int(m.group(1)))
         out.setdefault("ssd_gb", int(m.group(2)))
+    if "ram_gb" not in out:  # "24GB 256GB SSD": o único GB típico de RAM que sobra
+        ram = [
+            int(n) for n in _SPEC_GB_RE.findall(text) if int(n) in _RAM_SIZES and int(n) != out.get("ssd_gb")
+        ]
+        if len(set(ram)) == 1:
+            out["ram_gb"] = ram[0]
     return out
 
 
@@ -1181,6 +1191,10 @@ class BuscarMLInput(BaseModel):
         ),
     )
     pagina: int = Field(default=1, ge=1, le=20)
+    ordenar: OrdenarPor = Field(
+        default=OrdenarPor.RELEVANCIA,
+        description="'relevance' ou 'price' (menor preço). 'date' não suportado no ML.",
+    )
 
 
 def _build_ml_url(p: BuscarMLInput) -> tuple[str, list[str]]:
@@ -1201,6 +1215,8 @@ def _build_ml_url(p: BuscarMLInput) -> tuple[str, list[str]]:
             avisos.append("Filtro 'condicao' aplicado pós-scraping (heurística por título).")
     if p.pagina > 1:
         filters.append(f"_Desde_{(p.pagina - 1) * 50 + 1}")
+    if p.ordenar == OrdenarPor.PRECO_MENOR:
+        filters.append("_OrderId_PRICE_NoIndex_True")
     if filters:
         base += "".join(filters)
     return base, avisos
@@ -1280,6 +1296,181 @@ def _parse_ml_html(html: str) -> list[dict]:
     return anuncios
 
 
+# ---------------------------------------------------------------------------
+# Mercado Livre — API oficial (token OAuth)
+# ---------------------------------------------------------------------------
+ML_API = "https://api.mercadolibre.com"
+_ML_TOKEN_STATE: dict = {"access": None, "refresh": None, "loaded": False}
+_ML_SETUP_STEPS = [
+    "1. Registre um app em https://developers.mercadolivre.com.br/ (Minhas aplicações).",
+    "2. Autorize o app com sua conta (fluxo OAuth authorization_code) e obtenha access_token + refresh_token.",
+    "3. Exporte MCP_BR_ML_ACCESS_TOKEN=<access_token> (vale ~6h).",
+    "4. Para renovar sozinho: MCP_BR_ML_CLIENT_ID, MCP_BR_ML_CLIENT_SECRET, MCP_BR_ML_REFRESH_TOKEN "
+    "e MCP_BR_ML_TOKEN_FILE=<caminho> (o refresh token é de uso único; o arquivo guarda o novo).",
+]
+
+
+def _ml_requer_token(motivo: str = "A API pública de busca do Mercado Livre exige um token OAuth.") -> str:
+    return json.dumps(
+        {"fonte": "ml", "status": "requer_token", "erro": motivo, "passos": _ML_SETUP_STEPS},
+        ensure_ascii=False,
+        indent=2,
+    )
+
+
+def _ml_load_tokens() -> None:
+    if _ML_TOKEN_STATE["loaded"]:
+        return
+    _ML_TOKEN_STATE["loaded"] = True
+    _ML_TOKEN_STATE["access"] = _env("ML_ACCESS_TOKEN") or None
+    _ML_TOKEN_STATE["refresh"] = _env("ML_REFRESH_TOKEN") or None
+    path = _env("ML_TOKEN_FILE")
+    if path and os.path.exists(path):
+        try:
+            with open(path) as f:
+                saved = json.load(f)
+            _ML_TOKEN_STATE["access"] = _safe_str(saved.get("access_token")) or _ML_TOKEN_STATE["access"]
+            _ML_TOKEN_STATE["refresh"] = _safe_str(saved.get("refresh_token")) or _ML_TOKEN_STATE["refresh"]
+        except (OSError, ValueError):
+            logger.warning("ML_TOKEN_FILE ilegível; ignorando.")
+
+
+async def _ml_request(method: str, url: str, **kw) -> httpx.Response:
+    """Único ponto de rede da API ML (rate-limited). Os testes substituem esta função."""
+    async with _RateGate(url):
+        async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
+            return await client.request(method, url, **kw)
+
+
+async def _ml_refresh() -> bool:
+    """Renova o access token com o refresh token (uso único: persiste o novo em ML_TOKEN_FILE)."""
+    cid, secret, refresh = _env("ML_CLIENT_ID"), _env("ML_CLIENT_SECRET"), _ML_TOKEN_STATE["refresh"]
+    if not (cid and secret and refresh):
+        return False
+    resp = await _ml_request(
+        "POST",
+        f"{ML_API}/oauth/token",
+        data={
+            "grant_type": "refresh_token",
+            "client_id": cid,
+            "client_secret": secret,
+            "refresh_token": refresh,
+        },
+        headers={"Accept": "application/json"},
+    )
+    if resp.status_code != 200:
+        return False
+    data = _safe_dict(resp.json())
+    if not _safe_str(data.get("access_token")):
+        return False
+    _ML_TOKEN_STATE["access"] = _safe_str(data["access_token"])
+    _ML_TOKEN_STATE["refresh"] = _safe_str(data.get("refresh_token")) or refresh
+    path = _env("ML_TOKEN_FILE")
+    if path:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            json.dump(
+                {"access_token": _ML_TOKEN_STATE["access"], "refresh_token": _ML_TOKEN_STATE["refresh"]}, f
+            )
+    return True
+
+
+async def _ml_api_get(path: str, params: dict | None = None) -> tuple[str, object]:
+    """GET autenticado na API ML. Retorna (status, dados|mensagem).
+
+    status: ok | requer_token | blocked | removido | erro. Sem token ⇒ requer_token (nunca tenta evadir).
+    """
+    _ml_load_tokens()
+    if not _ML_TOKEN_STATE["access"] and not await _ml_refresh():
+        return "requer_token", None
+    for tentativa in (0, 1):
+        resp = await _ml_request(
+            "GET",
+            f"{ML_API}{path}",
+            params=params,
+            headers={"Authorization": f"Bearer {_ML_TOKEN_STATE['access']}", "Accept": "application/json"},
+        )
+        if resp.status_code == 200:
+            return "ok", resp.json()
+        if resp.status_code == 401 and tentativa == 0 and await _ml_refresh():
+            continue
+        if resp.status_code == 401:
+            return "requer_token", "Token inválido ou expirado."
+        if resp.status_code == 403:
+            return "blocked", "Mercado Livre recusou (403): token sem permissão ou IP bloqueado."
+        if resp.status_code in (404, 410):
+            return "removido", None
+        return "erro", f"HTTP {resp.status_code}"
+    return "erro", "falha ao autenticar"
+
+
+def _ml_attrs(item: dict) -> dict:
+    out = {}
+    for a in _safe_list(item.get("attributes"))[:_PROPS_MAX]:
+        a = _safe_dict(a)
+        nome, valor = _safe_str(a.get("name"), 100), _safe_str(a.get("value_name"))
+        if nome and valor:
+            out[nome] = valor
+    return out
+
+
+def _ml_spec_ram_gb(item: dict) -> int | None:
+    """RAM do spec (verdade). O título mente: 'Capacidade total do módulo de memória RAM'."""
+    for a in _safe_list(item.get("attributes")):
+        a = _safe_dict(a)
+        if "ram" in (_safe_str(a.get("name"), 100) or "").lower() or a.get("id") in ("RAM_MEMORY", "RAM"):
+            m = re.search(r"\d+", _safe_str(a.get("value_name")) or "")
+            if m:
+                return int(m.group())
+    return None
+
+
+def _ml_modelo(item: dict) -> str | None:
+    for a in _safe_list(item.get("attributes")):
+        a = _safe_dict(a)
+        if a.get("id") == "ALPHANUMERIC_MODEL":
+            return _safe_str(a.get("value_name"), 100)
+    return None
+
+
+def _ml_normalize(item: dict) -> dict:
+    """Item da API ML → schema unificado + campos ML. Expõe spec x título lado a lado."""
+    item = _safe_dict(item)
+    ml_id = _safe_str(item.get("id")) or ""
+    m = re.search(r"MLB-?(\d+)", ml_id)
+    preco = item.get("price")
+    titulo = _safe_str(item.get("title"))
+    ram_spec = _ml_spec_ram_gb(item)
+    ram_titulo = _extract_specs(titulo or "").get("ram_gb")
+    seller = _safe_dict(item.get("seller"))
+    addr = _safe_dict(item.get("address"))
+    out = {
+        "fonte": "ml",
+        "id": int(m.group(1)) if m else None,
+        "titulo": titulo,
+        "preco": f"R$ {preco:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        if isinstance(preco, (int, float))
+        else None,
+        "localizacao": ", ".join(
+            x for x in (_safe_str(addr.get("city_name")), _safe_str(addr.get("state_name"))) if x
+        )
+        or None,
+        "data": None,
+        "url": _safe_str(item.get("permalink")),
+        "imagem": _safe_str(item.get("thumbnail")),
+        "condicao": _safe_str(item.get("condition")),
+        "frete": "Frete grátis" if _safe_dict(item.get("shipping")).get("free_shipping") else None,
+        "vendedor": _safe_str(seller.get("nickname")),
+        "vendas": item.get("sold_quantity") if isinstance(item.get("sold_quantity"), int) else None,
+        "atributos": _ml_attrs(item),
+        "ram_gb_spec": ram_spec,
+        "modelo_alfanumerico": _ml_modelo(item),
+    }
+    if ram_spec and ram_titulo and ram_spec != ram_titulo:
+        out["aviso_ram"] = f"Título diz {ram_titulo}GB de RAM, mas o spec diz {ram_spec}GB (vale o spec)."
+    return out
+
+
 @mcp.tool(
     name="ml_buscar_anuncios",
     annotations={
@@ -1304,40 +1495,37 @@ async def ml_buscar_anuncios(params: BuscarMLInput) -> str:
     Returns:
         str: JSON com lista de anúncios (titulo, preco, frete, atributos, url, imagem).
     """
-    url, avisos = _build_ml_url(params)
+    url, avisos = _build_ml_url(params)  # url web: só referência para o humano
     logger.info("ml_search query=%r condicao=%s pagina=%s", params.query, params.condicao, params.pagina)
+    q: dict = {"q": params.query, "limit": 50, "offset": (params.pagina - 1) * 50}
+    if params.preco_min is not None or params.preco_max is not None:
+        q["price"] = f"{params.preco_min or 0}-{params.preco_max if params.preco_max is not None else '*'}"
+    if params.condicao and params.condicao.lower() in ("novo", "usado"):
+        q["ITEM_CONDITION"] = {"novo": "2230284", "usado": "2230581"}[params.condicao.lower()]
+    if params.ordenar == OrdenarPor.PRECO_MENOR:
+        q["sort"] = "price_asc"
     try:
-        html = await _fetch_with_retries(url, ML_HEADERS)
+        status, data = await _ml_api_get("/sites/MLB/search", q)
     except Exception as e:
-        return json.dumps({"erro": _handle_http_error(e), "url_busca": url}, ensure_ascii=False)
-
-    anuncios = _parse_ml_html(html)
-    for a in anuncios:
-        a["fonte"] = "ml"
-
-    # Filtro condicao pós-scraping (ML não aceita via URL no /lista)
-    if params.condicao:
-        cond_low = params.condicao.lower()
-        if cond_low == "usado":
-            anuncios = [a for a in anuncios if "usado" in (a.get("titulo") or "").lower()]
-        elif cond_low == "novo":
-            anuncios = [a for a in anuncios if "usado" not in (a.get("titulo") or "").lower()]
-
-    # Filtro estado (heurística pelo texto da localização)
+        return json.dumps(
+            {"fonte": "ml", "status": "erro", "erro": _handle_http_error(e)}, ensure_ascii=False
+        )
+    if status == "requer_token":
+        return _ml_requer_token(data or "A API pública de busca do Mercado Livre exige um token OAuth.")
+    if status != "ok":
+        return json.dumps(
+            {"fonte": "ml", "status": status, "erro": data, "url_busca": url}, ensure_ascii=False
+        )
+    d = _safe_dict(data)
+    anuncios = [_ml_normalize(i) for i in _safe_list(d.get("results"))[:50]]
     if params.estado:
         uf = params.estado.upper()
-        antes = len(anuncios)
         anuncios = [a for a in anuncios if a.get("localizacao") and uf in a["localizacao"].upper()]
-        if antes > 0 and not anuncios:
-            avisos.append(
-                "Filtro 'estado' não encontrou localização nos cards (raro no ML); "
-                "considere remover o filtro."
-            )
-
     return json.dumps(
         {
             "fonte": "ml",
-            "total": len(anuncios),  # ML não expõe totalOfAds; reflete itens retornados
+            "status": "ok",
+            "total": _safe_dict(d.get("paging")).get("total", len(anuncios)),
             "pagina": params.pagina,
             "por_pagina": len(anuncios),
             "url_busca": url,
@@ -1413,57 +1601,45 @@ async def ml_detalhe_anuncio(params: DetalheMLInput) -> str:
         return json.dumps({"erro": f"Erro de validação: {e}"}, ensure_ascii=False)
 
     logger.info("ml_detail url=%s", params.url)
+    m = re.search(r"MLB-?(\d+)", params.url)
+    if not m:
+        return json.dumps({"erro": "Não foi possível extrair o id MLB da URL."}, ensure_ascii=False)
+    item_id = f"MLB{m.group(1)}"
     try:
-        html = await _fetch_with_retries(params.url, ML_HEADERS)
+        status, item = await _ml_api_get(f"/items/{item_id}")
+        if status == "requer_token":
+            return _ml_requer_token(item or "A API do Mercado Livre exige um token OAuth.")
+        if status != "ok":
+            return json.dumps(
+                {"fonte": "ml", "status": status, "erro": item, "url": params.url}, ensure_ascii=False
+            )
+        item = _safe_dict(item)
+        d_status, desc = await _ml_api_get(f"/items/{item_id}/description")
+        seller = {}
+        if item.get("seller_id"):
+            u_status, u = await _ml_api_get(f"/users/{item['seller_id']}")
+            seller = _safe_dict(u) if u_status == "ok" else {}
     except Exception as e:
-        return json.dumps({"erro": _handle_http_error(e)}, ensure_ascii=False)
-
-    # ML retorna ~600KB; limitar contra OOM (#20)
-    if len(html) > MAX_HTML_BYTES:
-        html = html[:MAX_HTML_BYTES]
-
-    try:
-        # Title via meta og:title ou h1.ui-pdp-title
-        title_m = re.search(r'class="ui-pdp-title"[^>]*>([^<]{1,500})<', html)
-        titulo = title_m.group(1).strip() if title_m else None
-
-        # Preço: primeiro andes-money-amount__fraction
-        price_m = re.search(r'class="andes-money-amount__fraction"[^>]*>([\d\.]{1,12})<', html)
-        preco = f"R$ {price_m.group(1)}" if price_m else None
-
-        # ID do MLB
-        id_m = re.search(r'"itemId":"MLB(\d+)"', html) or re.search(r"MLB-?(\d+)", params.url)
-        ad_id = int(id_m.group(1)) if id_m else None
-
-        # Vendedor
-        seller_m = re.search(r'"nickname":"([^"]{1,80})"', html)
-        vendedor = seller_m.group(1) if seller_m else None
-
-        # Descrição (plainText)
-        desc_m = re.search(r'"plainText":"((?:[^"\\]|\\.){30,2000})"', html)
-        descricao = None
-        if desc_m:
-            descricao = desc_m.group(1).encode().decode("unicode_escape", errors="ignore")[:2000]
-
-        # Imagens
-        imgs_raw = re.findall(r'(https://http2\.mlstatic\.com/D_NQ_NP[^"\s]+\.(?:jpg|webp))', html)
-        imagens = list(dict.fromkeys(imgs_raw))[:10]
-
-        result = {
-            "fonte": "ml",
-            "id": ad_id,
-            "titulo": titulo,
-            "preco": preco,
-            "vendedor": vendedor,
-            "descricao": descricao,
-            "imagens": imagens,
+        return json.dumps(
+            {"fonte": "ml", "status": "erro", "erro": _handle_http_error(e)}, ensure_ascii=False
+        )
+    item["seller"] = {"nickname": seller.get("nickname")}
+    out = _ml_normalize(item)
+    out.update(
+        {
+            "status": "ok",
+            "descricao": (_safe_str(_safe_dict(desc).get("plain_text"), 2000) if d_status == "ok" else None),
+            "garantia": _safe_str(item.get("warranty")),
+            "vendedor_vendas": _safe_dict(
+                _safe_dict(seller.get("seller_reputation")).get("transactions")
+            ).get("completed"),
+            "imagens": [
+                _safe_str(_safe_dict(x).get("secure_url")) for x in _safe_list(item.get("pictures"))[:10]
+            ],
             "url": params.url,
         }
-        return json.dumps(result, ensure_ascii=False, indent=2)
-    except Exception as e:
-        err_id = uuid.uuid4().hex[:8]
-        logger.exception("Falha ao parsear ML detalhe [%s]: %s", err_id, e)
-        return json.dumps({"erro": f"Falha ao parsear anúncio ML (id={err_id})."}, ensure_ascii=False)
+    )
+    return json.dumps(out, ensure_ascii=False, indent=2)
 
 
 # ---------------------------------------------------------------------------

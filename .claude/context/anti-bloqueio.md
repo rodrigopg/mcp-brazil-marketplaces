@@ -14,6 +14,8 @@ OLX e Mercado Livre ativamente bloqueiam scraping. Aprendizados validados em pro
 
 ## Mercado Livre
 
+> Desde #77 as tools ML usam a API oficial com token (`MCP_BR_ML_ACCESS_TOKEN`); sem token retornam `requer_token`. Notas abaixo = histórico do caminho de scraping (não mais usado).
+
 - **Micro-landing anti-bot** com UA real. Workaround: `User-Agent: Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)`.
 - ML respeita Googlebot por SEO. Sem isso, página retorna ~7KB com challenge JS.
 - **`/lista.mercadolivre.com.br/<slug>`** funciona; `/celulares-telefones/.../<query>_NoIndex_True` também.
