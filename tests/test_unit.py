@@ -564,7 +564,7 @@ class TestOlxCardsAndFanout:
 
         monkeypatch.setattr(server, "_olx_search_once", fake)
         r = json.loads(await server.olx_buscar_anuncios(server.BuscarAnunciosInput(query="x")))
-        assert r == {"erro": "boom"}
+        assert r == {"fonte": "olx", "status": "erro", "erro": "boom"}
 
 
 class TestMlToken:
@@ -789,3 +789,89 @@ class TestAgregador:
         monkeypatch.setattr(server, "_agg_get", fake)
         r = json.loads(await server.agregador_buscar_ofertas(server.BuscarOfertasInput(query="x")))
         assert r["status"] == "layout"
+
+
+class TestPerSourceStatus:
+    @staticmethod
+    def _http_err(code):
+        import httpx
+
+        req = httpx.Request("GET", "https://x")
+        return httpx.HTTPStatusError("e", request=req, response=httpx.Response(code, request=req))
+
+    @pytest.mark.asyncio
+    async def test_search_blocked_status(self, monkeypatch):
+        from mcp_brazil_marketplaces import server
+
+        async def boom(url, referer_override=None):
+            raise self._http_err(403)
+
+        monkeypatch.setattr(server, "_fetch_with_evasion", boom)
+        monkeypatch.setattr(server, "DISABLE_JINA", True)
+        r = json.loads(await server.olx_buscar_anuncios(server.BuscarAnunciosInput(query="macbook")))
+        assert r["status"] == "blocked" and r["fonte"] == "olx" and "erro" in r
+
+    @pytest.mark.asyncio
+    async def test_detail_404_is_removido(self, monkeypatch):
+        from mcp_brazil_marketplaces import server
+
+        async def gone(url, referer_override=None):
+            raise self._http_err(404)
+
+        monkeypatch.setattr(server, "_fetch_with_evasion", gone)
+        url = "https://go.olx.com.br/goias/informatica/notebooks/x-1234567890"
+        r = json.loads(await server.olx_detalhe_anuncio(server.DetalheAnuncioInput(url=url)))
+        assert r["status"] == "removido"
+
+    @pytest.mark.asyncio
+    async def test_fanout_partial(self, monkeypatch):
+        from mcp_brazil_marketplaces import server
+
+        async def fake(p):
+            if p.estado == "df":
+                return server._erro("bloqueado", "olx", "blocked")
+            return {"fonte": "olx", "total": 1, "url_busca": "u", "anuncios": [{"id": 1, "titulo": "m"}]}
+
+        monkeypatch.setattr(server, "_olx_search_once", fake)
+        p = server.BuscarAnunciosInput(query="m", estado="go", estados=["df"])
+        r = json.loads(await server.olx_buscar_anuncios(p))
+        assert r["status"] == "parcial" and [f["status"] for f in r["fontes"]] == ["ok", "blocked"]
+
+    @pytest.mark.asyncio
+    async def test_jina_sends_no_cache(self, monkeypatch):
+        import httpx
+
+        from mcp_brazil_marketplaces import server
+
+        seen = {}
+
+        class FakeClient:
+            def __init__(self, *a, **k):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def get(self, url, headers=None):
+                seen.update(headers)
+                return httpx.Response(200, text="md", request=httpx.Request("GET", url))
+
+        monkeypatch.setattr(server.httpx, "AsyncClient", FakeClient)
+        monkeypatch.setattr(server, "RATE_LIMIT_MIN_GAP", 0.0)
+        await server._fetch_via_jina("https://www.olx.com.br/x")
+        assert seen["X-No-Cache"] == "true"
+
+    def test_status_of(self):
+        from mcp_brazil_marketplaces.server import _status_of
+
+        assert [_status_of(self._http_err(c)) for c in (403, 429, 410, 404, 500)] == [
+            "blocked",
+            "blocked",
+            "removido",
+            "removido",
+            "erro",
+        ]
+        assert _status_of(ValueError("x")) == "erro"

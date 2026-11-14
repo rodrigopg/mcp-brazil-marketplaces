@@ -11,6 +11,8 @@ e este projeto adere a [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 - **Breaking:** `ml_buscar_anuncios`/`ml_detalhe_anuncio` usam a API oficial do Mercado Livre. Exigem `MCP_BR_ML_ACCESS_TOKEN` (ou client id/secret/refresh); sem token retornam `{"status":"requer_token", passos}` em vez de lista vazia. O scraping com UA Googlebot não é mais usado (#77).
 
 ### Added
+- Toda resposta tem `fonte` + `status` (`ok` | `blocked` | `requer_token` | `removido` | `layout` | `erro`; fan-out OLX também `parcial`, com `fontes[]` por busca). Erros 403/429/503 → `blocked`, 404/410 → `removido` (#78).
+- Jina fallback envia `X-No-Cache: true` (preços sem cache) (#78).
 - Tool `agregador_buscar_ofertas` (Zoom/Buscapé): ofertas por loja (Magalu, Amazon, Casas Bahia...) lidas de `__NEXT_DATA__` → `initialReduxState`; cada oferta traz `nome_oferta` ao lado do título do catálogo e `titulo_divergente`/`avisos` quando chip/RAM/SSD divergem (ex.: oferta M2 sob catálogo M4). UA honesto, sem retry/evasão; bloqueio vira `status: blocked` (#47).
 - Extração de specs entende "24GB SSD 512GB" (SSD = maior candidato).
 - ML: atributos do spec (RAM, modelo alfanumérico), `aviso_ram` quando o título contradiz o spec, condição, vendedor, vendas, garantia, descrição; `ordenar=price` (#77).

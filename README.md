@@ -98,6 +98,10 @@ Busca anúncios na OLX com filtros.
 
 > **Mercado Livre exige token OAuth** (`MCP_BR_ML_ACCESS_TOKEN`; app em developers.mercadolivre.com.br). Sem token as tools ML retornam `status: requer_token` com os passos.
 
+### Status por fonte
+
+Toda resposta inclui `fonte` e `status`: `ok`, `blocked` (site recusou o servidor), `requer_token` (ML sem token OAuth), `removido` (anúncio fora do ar), `layout` (página mudou), `erro`. Assim o chamador sabe o que foi e o que não foi alcançado.
+
 ### `agregador_buscar_ofertas`
 
 Compara preços por loja (Magalu, Amazon, Casas Bahia, Ponto...) via Zoom ou Buscapé — essas lojas bloqueiam acesso direto de servidores. Cada oferta inclui o nome próprio ao lado do título do catálogo; `titulo_divergente` avisa quando chip/RAM/SSD não batem. Parâmetros: `query`, `fonte` (`zoom`|`buscape`), `preco_min`, `preco_max`, `limite_produtos`.
