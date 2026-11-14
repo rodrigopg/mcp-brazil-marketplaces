@@ -16,7 +16,8 @@ import uuid
 from datetime import datetime
 from enum import Enum
 from html import unescape
-from urllib.parse import urlparse
+from typing import Literal
+from urllib.parse import quote, urlparse
 
 import httpx
 from mcp.server.fastmcp import FastMCP
@@ -509,7 +510,9 @@ def _safe_list(v) -> list:
 
 _SPEC_CHIP_RE = re.compile(r"\bM([1-5])(?:\s?(Pro|Max|Ultra))?\b", re.IGNORECASE)
 _SPEC_RAM_RE = re.compile(r"\b(\d{1,3})\s?gb\s*(?:de\s*)?(?:ram|mem[oó]ria)\b", re.IGNORECASE)
-_SPEC_SSD_RE = re.compile(r"\b(\d{1,4})\s?(gb|tb)\s*(?:de\s*)?ssd\b", re.IGNORECASE)
+_SPEC_SSD_RE = re.compile(
+    r"\b(\d{1,4})\s?(gb|tb)(?=\s*(?:de\s*)?ssd\b)|\bssd\s*(?:de\s*)?(\d{1,4})\s?(gb|tb)\b", re.IGNORECASE
+)
 _SPEC_PAIR_RE = re.compile(r"\b(\d{1,2})\s?(?:gb)?\s?/\s?(\d{3,4})\s?(?:gb)?\b", re.IGNORECASE)
 
 
@@ -525,8 +528,13 @@ def _extract_specs(text: str) -> dict:
         out["chip"] = f"M{m.group(1)}" + (f" {m.group(2).title()}" if m.group(2) else "")
     if m := _SPEC_RAM_RE.search(text):
         out["ram_gb"] = int(m.group(1))
-    if m := _SPEC_SSD_RE.search(text):
-        out["ssd_gb"] = int(m.group(1)) * (1000 if m.group(2).lower() == "tb" else 1)
+    # "24GB SSD 512GB": as duas formas casam; o SSD é o maior candidato
+    ssd = [
+        int(m.group(1) or m.group(3)) * (1000 if (m.group(2) or m.group(4)).lower() == "tb" else 1)
+        for m in _SPEC_SSD_RE.finditer(text)
+    ]
+    if ssd:
+        out["ssd_gb"] = max(ssd)
     if m := _SPEC_PAIR_RE.search(text):
         out.setdefault("ram_gb", int(m.group(1)))
         out.setdefault("ssd_gb", int(m.group(2)))
@@ -1433,6 +1441,13 @@ def _ml_modelo(item: dict) -> str | None:
     return None
 
 
+def _brl(v) -> str | None:
+    """1234.5 -> 'R$ 1.234,50'."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    return f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+
 def _ml_normalize(item: dict) -> dict:
     """Item da API ML → schema unificado + campos ML. Expõe spec x título lado a lado."""
     item = _safe_dict(item)
@@ -1448,9 +1463,7 @@ def _ml_normalize(item: dict) -> dict:
         "fonte": "ml",
         "id": int(m.group(1)) if m else None,
         "titulo": titulo,
-        "preco": f"R$ {preco:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-        if isinstance(preco, (int, float))
-        else None,
+        "preco": _brl(preco),
         "localizacao": ", ".join(
             x for x in (_safe_str(addr.get("city_name")), _safe_str(addr.get("state_name"))) if x
         )
@@ -1640,6 +1653,172 @@ async def ml_detalhe_anuncio(params: DetalheMLInput) -> str:
         }
     )
     return json.dumps(out, ensure_ascii=False, indent=2)
+
+
+# ---------------------------------------------------------------------------
+# Agregadores (Zoom / Buscapé) — única rota legítima p/ Magalu, Casas Bahia, Ponto, Amazon
+# (esses sites bloqueiam IPs de datacenter; não tentamos burlar). Páginas públicas, UA honesto.
+# ---------------------------------------------------------------------------
+_AGG_BASE = {"zoom": "https://www.zoom.com.br", "buscape": "https://www.buscape.com.br"}
+_AGG_UA = "mcp-brazil-marketplaces (+https://github.com/rodrigopg/mcp-brazil-marketplaces)"
+_SPEC_COMPARE = (("chip", "chip"), ("ram_gb", "RAM (GB)"), ("ssd_gb", "SSD (GB)"))
+
+
+class BuscarOfertasInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, validate_assignment=True, extra="forbid")
+
+    query: str = Field(..., min_length=1, max_length=200, description="Ex: 'macbook air m4 24gb'.")
+    fonte: Literal["zoom", "buscape"] = Field(default="zoom", description="Agregador a consultar.")
+    preco_min: int | None = Field(default=None, ge=0)
+    preco_max: int | None = Field(default=None, ge=0)
+    limite_produtos: int = Field(
+        default=3, ge=1, le=5, description="Quantos produtos do catálogo detalhar com ofertas."
+    )
+
+
+async def _agg_get(url: str, fonte: str) -> tuple[str, str | None]:
+    """GET único, UA honesto, sem retry/evasão. Retorna (status, html|None): ok | blocked | removido | erro."""
+    host = urlparse(_AGG_BASE[fonte]).hostname or ""
+    try:
+        async with _RateGate(url):
+            async with httpx.AsyncClient(follow_redirects=True, timeout=REQUEST_TIMEOUT) as c:
+                r = await c.get(url, headers={"User-Agent": _AGG_UA, "Accept": "text/html"})
+    except (httpx.TimeoutException, httpx.TransportError):
+        return "erro", None
+    if (r.url.host or "") != host:
+        return "erro", None  # redirecionou para fora do agregador (SSRF)
+    if r.status_code in (403, 429, 503):
+        return "blocked", None
+    if r.status_code in (404, 410):
+        return "removido", None
+    if r.status_code != 200:
+        return "erro", None
+    return "ok", r.text[:MAX_HTML_BYTES]
+
+
+def _agg_redux(html: str) -> dict:
+    return _safe_dict(_safe_dict(_extract_next_data(html).get("props")).get("initialReduxState"))
+
+
+def _agg_divergencias(nome_catalogo: str, nome_oferta: str) -> list[str]:
+    """Títulos de catálogo são mal mapeados (oferta 'M2' sob catálogo 'M4'): compara chip/RAM/SSD."""
+    sc, so = _extract_specs(nome_catalogo), _extract_specs(nome_oferta)
+    return [
+        f"{rot}: catálogo {sc[k]}, oferta {so[k]}"
+        for k, rot in _SPEC_COMPARE
+        if k in sc and k in so and sc[k] != so[k]
+    ]
+
+
+def _agg_ofertas(redux: dict, nome_catalogo: str) -> list[dict]:
+    out = []
+    for o in _safe_list(_safe_dict(redux.get("offers")).get("offerList"))[:_LIST_MAX]:
+        o = _safe_dict(o)
+        nome = _safe_str(o.get("name")) or ""
+        div = _agg_divergencias(nome_catalogo, nome)
+        out.append(
+            {
+                "loja": _safe_str(o.get("sellerName"), 100),
+                "preco": _brl(o.get("price")),
+                "nome_oferta": nome,  # sempre ao lado do título do catálogo
+                "marketplace": bool(o.get("sellerIsMarketplace")),
+                "parcelas": o.get("numParcels") if isinstance(o.get("numParcels"), int) else None,
+                "specs_oferta": _extract_specs(nome),
+                "titulo_divergente": bool(div),
+                "avisos": div,
+            }
+        )
+    unicos = {(o["loja"], o["preco"], o["nome_oferta"]): o for o in out}.values()  # mesma loja listada 2x
+    return sorted(unicos, key=lambda x: (x["preco"] is None, _brl_num(x["preco"])))
+
+
+def _brl_num(v: str | None) -> float:
+    return float(v.replace("R$", "").replace(".", "").replace(",", ".")) if v else 0.0
+
+
+@mcp.tool(
+    name="agregador_buscar_ofertas",
+    annotations={
+        "title": "Comparar ofertas de lojas via Zoom/Buscapé",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True,
+    },
+)
+async def agregador_buscar_ofertas(params: BuscarOfertasInput) -> str:
+    """Busca produtos no Zoom ou Buscapé e lista a oferta de cada loja (Magalu, Amazon, Casas Bahia...).
+
+    Rota legítima para lojas que bloqueiam este servidor. Cada oferta traz o próprio nome
+    (`nome_oferta`) ao lado do título do catálogo: catálogos misturam modelos, então confira
+    `titulo_divergente`/`avisos` antes de confiar no preço. Preços são de vitrine: confirme na loja.
+
+    Returns:
+        JSON: fonte, status (ok | blocked | removido | erro | layout), produtos[] com
+        titulo_catalogo, preco_catalogo, url, lojas, ofertas[] e status por produto.
+    """
+    fonte = params.fonte
+    base = _AGG_BASE[fonte]
+    logger.info("agregador query=%r fonte=%s", params.query, fonte)
+    status, html = await _agg_get(f"{base}/search?q={quote(params.query)}", fonte)
+    if status != "ok":
+        dica = (
+            "O agregador bloqueou a consulta; abra a busca no navegador."
+            if status == "blocked"
+            else "Falha ao consultar o agregador."
+        )
+        return json.dumps({"fonte": fonte, "status": status, "erro": dica}, ensure_ascii=False)
+    try:
+        hits = _safe_list(_safe_dict(_agg_redux(html).get("hits")).get("hits"))
+    except ValueError:
+        return json.dumps(
+            {"fonte": fonte, "status": "layout", "erro": "Página sem dados estruturados (layout mudou)."},
+            ensure_ascii=False,
+        )
+    produtos = []
+    for h in hits:
+        h = _safe_dict(h)
+        preco, nome, path = h.get("price"), _safe_str(h.get("name")) or "", _safe_str(h.get("url")) or ""
+        if not path.startswith("/") or h.get("type", "product") != "product":
+            continue
+        if isinstance(preco, (int, float)) and (
+            (params.preco_min is not None and preco < params.preco_min)
+            or (params.preco_max is not None and preco > params.preco_max)
+        ):
+            continue
+        produtos.append(
+            {
+                "titulo_catalogo": nome,
+                "preco_catalogo": _brl(preco),
+                "specs_catalogo": _extract_specs(nome),
+                "lojas": [
+                    _safe_str(_safe_dict(m).get("name"), 100) for m in _safe_list(h.get("merchants"))[:10]
+                ],
+                "url": base + path.split("?")[0],
+            }
+        )
+    for prod in produtos[: params.limite_produtos]:
+        p_status, p_html = await _agg_get(prod["url"], fonte)
+        prod["status"] = p_status
+        if p_status != "ok":
+            continue
+        try:
+            prod["ofertas"] = _agg_ofertas(_agg_redux(p_html), prod["titulo_catalogo"])
+        except ValueError:
+            prod["status"] = "layout"
+    return json.dumps(
+        {
+            "fonte": fonte,
+            "status": "ok",
+            "total_catalogo": len(produtos),
+            "produtos": produtos[: params.limite_produtos],
+            "avisos": [
+                "Preços de vitrine do agregador; confirme na loja. Compare nome_oferta com titulo_catalogo."
+            ],
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
 
 
 # ---------------------------------------------------------------------------
