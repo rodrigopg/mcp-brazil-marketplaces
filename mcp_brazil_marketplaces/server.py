@@ -287,6 +287,23 @@ class BuscarAnunciosInput(BaseModel):
         ge=1,
         le=50,
     )
+    excluir: list[str] | None = Field(
+        default=None,
+        description=(
+            "Palavras a excluir (case-insensitive, no título). Ex: ['capa','caixa','carregador','película']"
+        ),
+        max_length=20,
+    )
+    queries: list[str] | None = Field(
+        default=None,
+        description="Buscas extras além de `query` (fan-out, máx 5 no total). Resultados deduplicados por id.",
+        max_length=4,
+    )
+    estados: list[str] | None = Field(
+        default=None,
+        description="Estados extras além de `estado` (fan-out, máx 5 no total). Ex: ['go','df']",
+        max_length=4,
+    )
 
 
 class DetalheAnuncioInput(BaseModel):
@@ -488,6 +505,75 @@ def _safe_dict(v) -> dict:
 
 def _safe_list(v) -> list:
     return v if isinstance(v, list) else []
+
+
+_SPEC_CHIP_RE = re.compile(r"\bM([1-5])(?:\s?(Pro|Max|Ultra))?\b", re.IGNORECASE)
+_SPEC_RAM_RE = re.compile(r"\b(\d{1,3})\s?gb\s*(?:de\s*)?(?:ram|mem[oó]ria)\b", re.IGNORECASE)
+_SPEC_SSD_RE = re.compile(r"\b(\d{1,4})\s?(gb|tb)\s*(?:de\s*)?ssd\b", re.IGNORECASE)
+_SPEC_PAIR_RE = re.compile(r"\b(\d{1,2})\s?(?:gb)?\s?/\s?(\d{3,4})\s?(?:gb)?\b", re.IGNORECASE)
+
+
+def _extract_specs(text: str) -> dict:
+    """Chip/RAM/SSD inferidos do texto (título). Heurística — o anúncio pode se contradizer."""
+    text = text[:2000]
+    out: dict = {}
+    if m := _SPEC_CHIP_RE.search(text):
+        out["chip"] = f"M{m.group(1)}" + (f" {m.group(2).title()}" if m.group(2) else "")
+    if m := _SPEC_RAM_RE.search(text):
+        out["ram_gb"] = int(m.group(1))
+    if m := _SPEC_SSD_RE.search(text):
+        out["ssd_gb"] = int(m.group(1)) * (1000 if m.group(2).lower() == "tb" else 1)
+    if m := _SPEC_PAIR_RE.search(text):
+        out.setdefault("ram_gb", int(m.group(1)))
+        out.setdefault("ssd_gb", int(m.group(2)))
+    return out
+
+
+_CARD_END_RE = re.compile(r"</section>")
+_CARD_HREF_RE = re.compile(r'<a[^>]{0,500}?href="([^"]{1,600})"')
+_CARD_ID_RE = re.compile(r"-(\d{6,})$")
+_CARD_TEXT = r"((?:[^<]|</?(?:span|strong|b|small)\b[^>]{0,100}>){0,300})"
+
+
+def _card_field_re(cls: str) -> re.Pattern:
+    return re.compile(rf'class="(?:[^"]{{0,200}}\s)?{cls}(?:\s[^"]{{0,200}})?"[^>]{{0,300}}>' + _CARD_TEXT)
+
+
+_CARD_FIELDS = {
+    "titulo": _card_field_re("olx-adcard__title"),
+    "preco": _card_field_re("olx-adcard__price"),
+    "preco_antigo": _card_field_re("olx-adcard__old-price"),
+    "localizacao": _card_field_re("olx-adcard__location"),
+    "data": _card_field_re("olx-adcard__date"),
+    "vendedor": _card_field_re("Ir9Wnq_transactionalSellerName"),
+}
+
+
+def _parse_olx_cards(html: str) -> list[dict]:
+    """Cards da busca (`section.olx-adcard`) quando não há __NEXT_DATA__. Regex lineares, caps de tamanho."""
+    if len(html) > MAX_HTML_BYTES:
+        html = html[:MAX_HTML_BYTES]
+    out: list[dict] = []
+    for chunk in html.split("<section")[1:201]:
+        if "olx-adcard" not in chunk[:300]:
+            continue
+        chunk = chunk[:20000]
+        end = _CARD_END_RE.search(chunk)
+        chunk = chunk[: end.start()] if end else chunk
+        href = _CARD_HREF_RE.search(chunk)
+        url = unescape(href.group(1)).split("?")[0] if href else ""
+        try:
+            _validar_url_olx(url)
+        except ValueError:
+            continue
+        ad: dict = {"url": url}
+        m = _CARD_ID_RE.search(url)
+        ad["id"] = int(m.group(1)) if m else None
+        for key, rx in _CARD_FIELDS.items():
+            f = rx.search(chunk)
+            ad[key] = _safe_str(" ".join(unescape(_TAG_RE.sub("", f.group(1))).split())) if f else None
+        out.append(ad)
+    return out
 
 
 def _format_ad_summary(ad: dict) -> dict:
@@ -769,6 +855,63 @@ def _handle_http_error(e: Exception) -> str:
 # ---------------------------------------------------------------------------
 
 
+async def _olx_search_once(params: BuscarAnunciosInput) -> dict:
+    """Uma busca (1 query × 1 estado). Retorna dict; erros viram {"erro": ...}."""
+    try:
+        url = _build_search_url(params)
+    except ValueError as e:
+        return {"erro": str(e)}
+
+    logger.info(
+        "olx_search query=%r estado=%s categoria=%s pagina=%s",
+        params.query,
+        params.estado,
+        params.categoria,
+        params.pagina,
+    )
+    html = None
+    try:
+        html = await _fetch_with_evasion(url)
+    except Exception:
+        if DISABLE_JINA:
+            return {"erro": "Erro: acesso negado e fallback Jina desabilitado (MCP_BR_DISABLE_JINA=1)."}
+        # Fallback markdown via r.jina.ai
+        try:
+            md = await _fetch_via_jina(url)
+            result = _parse_search_markdown(md, url)
+            result["fonte"] = "olx_jina"
+            return result
+        except Exception as e:
+            return {"erro": _handle_http_error(e)}
+
+    try:
+        props = _extract_next_data(html)["props"]["pageProps"]
+        anuncios = [_format_ad_summary(ad) for ad in props.get("ads", []) if ad.get("listId")]
+        total = props.get("totalOfAds", 0)
+    except Exception:
+        # OLX removeu __NEXT_DATA__ da busca: lê os cards `section.olx-adcard`
+        anuncios = _parse_olx_cards(html)
+        total = len(anuncios)
+        props = {}
+        if not anuncios:
+            return {
+                "erro": "Layout da busca OLX não reconhecido (sem __NEXT_DATA__ nem cards olx-adcard).",
+                "status": "layout",
+            }
+    for a in anuncios:
+        a["fonte"] = "olx"
+
+    result = {
+        "fonte": "olx",
+        "total": total,
+        "pagina": props.get("pageIndex", params.pagina),
+        "por_pagina": props.get("pageSize", len(anuncios)),
+        "url_busca": url,
+        "anuncios": anuncios,
+    }
+    return result
+
+
 @mcp.tool(
     name="olx_buscar_anuncios",
     annotations={
@@ -793,6 +936,8 @@ async def olx_buscar_anuncios(params: BuscarAnunciosInput) -> str:
             - preco_max (Optional[int]): Preço máximo em reais.
             - ordenar (str): 'relevance' | 'price' | 'date'. Padrão: 'relevance'.
             - pagina (int): Número da página (1–50). Padrão: 1.
+            - excluir (Optional[list[str]]): palavras a excluir do título (acessórios etc.).
+            - queries / estados (Optional[list[str]]): fan-out; resultados deduplicados por id.
 
     Returns:
         str: JSON com campos:
@@ -801,58 +946,52 @@ async def olx_buscar_anuncios(params: BuscarAnunciosInput) -> str:
             - por_pagina (int): Anúncios por página.
             - url_busca (str): URL utilizada na busca.
             - anuncios (list): Lista de anúncios com id, titulo, preco, categoria,
-              localizacao, bairro, data, url, imagem, profissional, entrega_olx, propriedades.
+              localizacao, bairro, data, url, imagem, profissional, entrega_olx, propriedades,
+              specs (chip/ram/ssd inferidos do título) e preco_cartao=true (preço da listagem
+              pode estar defasado: confirme com olx_detalhe_anuncio).
+            - fontes (list): status por (query, estado): ok | erro.
     """
-    try:
-        url = _build_search_url(params)
-    except ValueError as e:
-        return json.dumps({"erro": str(e)}, ensure_ascii=False)
+    queries = list(dict.fromkeys([params.query, *(params.queries or [])]))[:5]
+    estados = list(dict.fromkeys([params.estado, *(params.estados or [])]))[:5]
+    combos = [(q, e) for q in queries for e in estados]
+    excluir = [x.lower() for x in (params.excluir or []) if x.strip()]
 
-    logger.info(
-        "olx_search query=%r estado=%s categoria=%s pagina=%s",
-        params.query,
-        params.estado,
-        params.categoria,
-        params.pagina,
-    )
-    html = None
-    try:
-        html = await _fetch_with_evasion(url)
-    except Exception:
-        if DISABLE_JINA:
-            return json.dumps(
-                {"erro": "Erro: acesso negado e fallback Jina desabilitado (MCP_BR_DISABLE_JINA=1)."},
-                ensure_ascii=False,
-            )
-        # Fallback markdown via r.jina.ai
-        try:
-            md = await _fetch_via_jina(url)
-            result = _parse_search_markdown(md, url)
-            result["fonte"] = "olx_jina"
-            return json.dumps(result, ensure_ascii=False, indent=2)
-        except Exception as e:
-            return json.dumps({"erro": _handle_http_error(e)}, ensure_ascii=False)
+    anuncios: list[dict] = []
+    vistos: set = set()
+    fontes: list[dict] = []
+    total = 0
+    url_busca = None
+    for q, e in combos:
+        r = await _olx_search_once(params.model_copy(update={"query": q, "estado": e}))
+        if "erro" in r:
+            fontes.append({"query": q, "estado": e, "status": "erro", "erro": r["erro"]})
+            continue
+        fontes.append({"query": q, "estado": e, "status": "ok", "fonte": r.get("fonte")})
+        total += r.get("total") or 0
+        url_busca = url_busca or r.get("url_busca")
+        for a in r["anuncios"]:
+            if a.get("id") in vistos:
+                continue
+            vistos.add(a.get("id"))
+            a["preco_cartao"] = True  # preço do card pode estar defasado; confirmar em olx_detalhe_anuncio
+            a["specs"] = _extract_specs(f"{a.get('titulo') or ''} {a.get('url') or ''}")
+            if excluir and any(x in (a.get("titulo") or "").lower() for x in excluir):
+                continue
+            anuncios.append(a)
 
-    try:
-        data = _extract_next_data(html)
-        props = data["props"]["pageProps"]
-    except Exception as e:
-        err_id = uuid.uuid4().hex[:8]
-        logger.exception("Falha ao extrair dados [%s]: %s", err_id, e)
-        return json.dumps({"erro": f"Falha ao extrair dados (id={err_id})."}, ensure_ascii=False)
-
-    ads_raw = props.get("ads", [])
-    anuncios = [_format_ad_summary(ad) for ad in ads_raw if ad.get("listId")]
-    for a in anuncios:
-        a["fonte"] = "olx"
-
+    if len(combos) == 1 and fontes[0]["status"] == "erro":
+        return json.dumps({"erro": fontes[0]["erro"]}, ensure_ascii=False)
     result = {
         "fonte": "olx",
-        "total": props.get("totalOfAds", 0),
-        "pagina": props.get("pageIndex", params.pagina),
-        "por_pagina": props.get("pageSize", len(anuncios)),
-        "url_busca": url,
+        "total": total,
+        "pagina": params.pagina,
+        "por_pagina": len(anuncios),
+        "url_busca": url_busca,
         "anuncios": anuncios,
+        "fontes": fontes,
+        "avisos": [
+            "preco_cartao: preços da listagem podem estar defasados; confirme com olx_detalhe_anuncio."
+        ],
     }
     return json.dumps(result, ensure_ascii=False, indent=2)
 
