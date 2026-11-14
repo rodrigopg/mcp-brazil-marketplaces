@@ -504,3 +504,63 @@ class TestOlxRemovido:
         r = json.loads(await server.olx_verificar_anuncios(server.VerificarAnunciosInput(urls=urls)))
         assert [a["status"] for a in r["anuncios"]] == ["ativo", "removido", "blocked"]
         assert "dica" in r["anuncios"][2]
+
+
+class TestOlxCardsAndFanout:
+    def _html(self):
+        from pathlib import Path
+
+        return (Path(__file__).parent / "fixtures" / "olx_busca_cards.html").read_text()
+
+    def test_parse_cards(self):
+        from mcp_brazil_marketplaces.server import _parse_olx_cards
+
+        c = _parse_olx_cards(self._html())
+        assert len(c) == 3
+        assert c[0]["id"] == 1438037297 and c[0]["preco"] == "R$ 6.650" and c[0]["preco_antigo"] == "R$ 7.399"
+        assert c[0]["titulo"] == "MacBook Air M4 ?13.3? 16/256" and c[0]["vendedor"] == "Paris eletrônicos"
+        assert c[0]["localizacao"].startswith("Aparecida") and c[0]["data"] == "3 de nov, 10:04"
+        assert "?" not in c[0]["url"] and c[1]["preco_antigo"] is None
+
+    def test_cards_reject_foreign_host(self):
+        from mcp_brazil_marketplaces.server import _parse_olx_cards
+
+        evil = '<section class="olx-adcard"><a href="https://evil.com/x-1234567"><h2 class="olx-adcard__title">x</h2></a></section>'
+        assert _parse_olx_cards(evil) == []
+
+    def test_specs(self):
+        from mcp_brazil_marketplaces.server import _extract_specs
+
+        assert _extract_specs("MacBook Air M4 16/256") == {"chip": "M4", "ram_gb": 16, "ssd_gb": 256}
+        assert _extract_specs("MacBook Pro M3 Pro 18gb ram 1tb ssd") == {
+            "chip": "M3 Pro",
+            "ram_gb": 18,
+            "ssd_gb": 1000,
+        }
+        assert _extract_specs("iPhone") == {}
+
+    @pytest.mark.asyncio
+    async def test_fanout_dedup_exclude_flag(self, monkeypatch):
+        from mcp_brazil_marketplaces import server
+
+        async def fake(p):
+            ads = server._parse_olx_cards(TestOlxCardsAndFanout._html(None))
+            return {"fonte": "olx", "total": 3, "url_busca": "u", "anuncios": ads if p.estado != "xx" else []}
+
+        monkeypatch.setattr(server, "_olx_search_once", fake)
+        p = server.BuscarAnunciosInput(query="macbook", estado="go", estados=["df"], excluir=["Capa"])
+        r = json.loads(await server.olx_buscar_anuncios(p))
+        assert [a["id"] for a in r["anuncios"]] == [1438037297, 1550337693]  # dedup go/df + sem capa
+        assert all(a["preco_cartao"] for a in r["anuncios"]) and r["anuncios"][0]["specs"]["chip"] == "M4"
+        assert [f["status"] for f in r["fontes"]] == ["ok", "ok"] and r["avisos"]
+
+    @pytest.mark.asyncio
+    async def test_single_error_stays_erro(self, monkeypatch):
+        from mcp_brazil_marketplaces import server
+
+        async def fake(p):
+            return {"erro": "boom"}
+
+        monkeypatch.setattr(server, "_olx_search_once", fake)
+        r = json.loads(await server.olx_buscar_anuncios(server.BuscarAnunciosInput(query="x")))
+        assert r == {"erro": "boom"}
