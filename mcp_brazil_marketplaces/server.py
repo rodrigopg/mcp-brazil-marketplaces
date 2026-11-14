@@ -751,7 +751,7 @@ async def _fetch_via_jina(url: str) -> str:
         async with httpx.AsyncClient(follow_redirects=True, timeout=REQUEST_TIMEOUT) as client:
             resp = await client.get(
                 proxy_url,
-                headers={"Accept": "text/markdown", "X-Return-Format": "markdown"},
+                headers={"Accept": "text/markdown", "X-Return-Format": "markdown", "X-No-Cache": "true"},
             )
             resp.raise_for_status()
             return resp.text
@@ -868,6 +868,21 @@ def _handle_http_error(e: Exception) -> str:
     return f"Erro inesperado (id={err_id}). Consulte os logs do servidor para detalhes."
 
 
+def _status_of(e: Exception) -> str:
+    """Status por fonte p/ exceções de rede: blocked | removido | erro."""
+    if isinstance(e, httpx.HTTPStatusError):
+        if e.response.status_code in (403, 429, 503):
+            return "blocked"
+        if e.response.status_code in (404, 410):
+            return "removido"
+    return "erro"
+
+
+def _erro(msg: str, fonte: str, status: str = "erro", **extra) -> dict:
+    """Envelope de erro padrão: toda resposta tem `fonte` + `status` (ok|blocked|requer_token|removido|layout|erro)."""
+    return {"fonte": fonte, "status": status, "erro": msg, **extra}
+
+
 # ---------------------------------------------------------------------------
 # Ferramentas
 # ---------------------------------------------------------------------------
@@ -878,7 +893,7 @@ async def _olx_search_once(params: BuscarAnunciosInput) -> dict:
     try:
         url = _build_search_url(params)
     except ValueError as e:
-        return {"erro": str(e)}
+        return _erro(str(e), "olx")
 
     logger.info(
         "olx_search query=%r estado=%s categoria=%s pagina=%s",
@@ -890,17 +905,24 @@ async def _olx_search_once(params: BuscarAnunciosInput) -> dict:
     html = None
     try:
         html = await _fetch_with_evasion(url)
-    except Exception:
+    except Exception as e0:
         if DISABLE_JINA:
-            return {"erro": "Erro: acesso negado e fallback Jina desabilitado (MCP_BR_DISABLE_JINA=1)."}
+            return _erro(
+                "Erro: acesso negado e fallback Jina desabilitado (MCP_BR_DISABLE_JINA=1).",
+                "olx",
+                _status_of(e0),
+            )
         # Fallback markdown via r.jina.ai
         try:
             md = await _fetch_via_jina(url)
             result = _parse_search_markdown(md, url)
             result["fonte"] = "olx_jina"
+            result["status"] = "ok"
             return result
         except Exception as e:
-            return {"erro": _handle_http_error(e)}
+            return _erro(
+                _handle_http_error(e), "olx", _status_of(e0) if _status_of(e0) != "erro" else _status_of(e)
+            )
 
     try:
         props = _extract_next_data(html)["props"]["pageProps"]
@@ -912,10 +934,11 @@ async def _olx_search_once(params: BuscarAnunciosInput) -> dict:
         total = len(anuncios)
         props = {}
         if not anuncios:
-            return {
-                "erro": "Layout da busca OLX não reconhecido (sem __NEXT_DATA__ nem cards olx-adcard).",
-                "status": "layout",
-            }
+            return _erro(
+                "Layout da busca OLX não reconhecido (sem __NEXT_DATA__ nem cards olx-adcard).",
+                "olx",
+                "layout",
+            )
     for a in anuncios:
         a["fonte"] = "olx"
 
@@ -982,7 +1005,7 @@ async def olx_buscar_anuncios(params: BuscarAnunciosInput) -> str:
     for q, e in combos:
         r = await _olx_search_once(params.model_copy(update={"query": q, "estado": e}))
         if "erro" in r:
-            fontes.append({"query": q, "estado": e, "status": "erro", "erro": r["erro"]})
+            fontes.append({"query": q, "estado": e, "status": r.get("status", "erro"), "erro": r["erro"]})
             continue
         fontes.append({"query": q, "estado": e, "status": "ok", "fonte": r.get("fonte")})
         total += r.get("total") or 0
@@ -997,10 +1020,12 @@ async def olx_buscar_anuncios(params: BuscarAnunciosInput) -> str:
                 continue
             anuncios.append(a)
 
-    if len(combos) == 1 and fontes[0]["status"] == "erro":
-        return json.dumps({"erro": fontes[0]["erro"]}, ensure_ascii=False)
+    falhas = [f for f in fontes if f["status"] != "ok"]
+    if len(falhas) == len(fontes):
+        return json.dumps(_erro(falhas[0]["erro"], "olx", falhas[0]["status"]), ensure_ascii=False)
     result = {
         "fonte": "olx",
+        "status": "parcial" if falhas else "ok",
         "total": total,
         "pagina": params.pagina,
         "por_pagina": len(anuncios),
@@ -1053,24 +1078,29 @@ async def olx_detalhe_anuncio(params: DetalheAnuncioInput) -> str:
     try:
         _validar_url_olx(params.url)
     except ValueError as e:
-        return json.dumps({"erro": f"Erro de validação: {e}"}, ensure_ascii=False)
+        return json.dumps(_erro(f"Erro de validação: {e}", "olx"), ensure_ascii=False)
 
     used_jina = False
     try:
         html = await _fetch_with_evasion(params.url)
     except Exception as e0:
-        if isinstance(e0, httpx.HTTPStatusError) and e0.response.status_code == 410:
+        if _status_of(e0) == "removido":  # 404/410: anúncio saiu do ar
             return json.dumps({"fonte": "olx", "status": "removido", "url": params.url}, ensure_ascii=False)
         if DISABLE_JINA:
             return json.dumps(
-                {"erro": "Erro: acesso negado e fallback Jina desabilitado (MCP_BR_DISABLE_JINA=1)."},
+                _erro(
+                    "Erro: acesso negado e fallback Jina desabilitado (MCP_BR_DISABLE_JINA=1).",
+                    "olx",
+                    _status_of(e0),
+                ),
                 ensure_ascii=False,
             )
         try:
             html = await _fetch_via_jina(params.url)
             used_jina = True
         except Exception as e:
-            return json.dumps({"erro": _handle_http_error(e)}, ensure_ascii=False)
+            st = _status_of(e0) if _status_of(e0) != "erro" else _status_of(e)
+            return json.dumps(_erro(_handle_http_error(e), "olx", st), ensure_ascii=False)
 
     # Se vier markdown do jina, parse simples
     if used_jina:
@@ -1082,6 +1112,7 @@ async def olx_detalhe_anuncio(params: DetalheAnuncioInput) -> str:
             imgs = list(dict.fromkeys(re.findall(r"https://img\.olx\.com\.br/[^\s\)]+", html)))
             result = {
                 "fonte": "olx_jina",
+                "status": "ok",
                 "titulo": (titulo_m.group(1).strip() if titulo_m else None),
                 "preco": (f"R$ {preco_m.group(1)}" if preco_m else None),
                 "descricao": (desc_m.group(1).strip()[:2000] if desc_m else None),
@@ -1093,17 +1124,21 @@ async def olx_detalhe_anuncio(params: DetalheAnuncioInput) -> str:
         except Exception as e:
             err_id = uuid.uuid4().hex[:8]
             logger.exception("Falha ao parsear markdown [%s]: %s", err_id, e)
-            return json.dumps({"erro": f"Falha ao parsear markdown (id={err_id})."}, ensure_ascii=False)
+            return json.dumps(
+                _erro(f"Falha ao parsear markdown (id={err_id}).", "olx_jina", "layout"), ensure_ascii=False
+            )
 
     try:
         ad = _extract_initial_data(html)
         return json.dumps(_parse_olx_ad(ad, params.url), ensure_ascii=False, indent=2)
     except ValueError as e:
-        return json.dumps({"erro": f"Não foi possível extrair dados do anúncio: {e}"}, ensure_ascii=False)
+        return json.dumps(
+            _erro(f"Não foi possível extrair dados do anúncio: {e}", "olx", "layout"), ensure_ascii=False
+        )
     except Exception as e:
         err_id = uuid.uuid4().hex[:8]
         logger.exception("Falha ao processar anúncio [%s]: %s", err_id, e)
-        return json.dumps({"erro": f"Falha ao processar anúncio (id={err_id})."}, ensure_ascii=False)
+        return json.dumps(_erro(f"Falha ao processar anúncio (id={err_id}).", "olx"), ensure_ascii=False)
 
 
 class VerificarAnunciosInput(BaseModel):
@@ -1611,12 +1646,12 @@ async def ml_detalhe_anuncio(params: DetalheMLInput) -> str:
     try:
         _validar_url_ml(params.url)
     except ValueError as e:
-        return json.dumps({"erro": f"Erro de validação: {e}"}, ensure_ascii=False)
+        return json.dumps(_erro(f"Erro de validação: {e}", "ml"), ensure_ascii=False)
 
     logger.info("ml_detail url=%s", params.url)
     m = re.search(r"MLB-?(\d+)", params.url)
     if not m:
-        return json.dumps({"erro": "Não foi possível extrair o id MLB da URL."}, ensure_ascii=False)
+        return json.dumps(_erro("Não foi possível extrair o id MLB da URL.", "ml"), ensure_ascii=False)
     item_id = f"MLB{m.group(1)}"
     try:
         status, item = await _ml_api_get(f"/items/{item_id}")
