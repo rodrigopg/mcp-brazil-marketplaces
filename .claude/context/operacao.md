@@ -15,7 +15,10 @@ Todos com prefixo `MCP_BR_*` (preferido) ou `OLX_MCP_*` (compat legado). Lidas v
 | `MCP_BR_RATE_LIMIT_MIN_GAP` | 0.5 | 0.0–30.0 | Gap mínimo por host (s). 0 = disabled |
 | `MCP_BR_DISABLE_JINA` | 0 | 0/1 | Desabilita fallback `r.jina.ai` |
 | `MCP_BR_LOG_LEVEL` | WARNING | DEBUG/INFO/WARNING/ERROR/CRITICAL | Logger `mcp_brazil_marketplaces` |
-| `MCP_BR_ML_USER_AGENT` | (Googlebot) | qualquer string | Override UA do ML (perde bypass) |
+| `MCP_BR_ML_USER_AGENT` | (Googlebot) | qualquer string | Legado: não é mais usado pelas tools ML (API oficial) |
+| `MCP_BR_ML_ACCESS_TOKEN` | — | token OAuth | Obrigatório p/ tools ML; sem ele → `status: requer_token` |
+| `MCP_BR_ML_CLIENT_ID` / `_CLIENT_SECRET` / `_REFRESH_TOKEN` | — | OAuth app | Renovação automática do access token em 401 |
+| `MCP_BR_ML_TOKEN_FILE` | — | caminho | Guarda tokens renovados (refresh é uso único; arquivo 0600) |
 
 Helpers internos:
 ```python

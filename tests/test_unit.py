@@ -538,6 +538,7 @@ class TestOlxCardsAndFanout:
             "ssd_gb": 1000,
         }
         assert _extract_specs("iPhone") == {}
+        assert _extract_specs("MacBook Air M2 24GB 256GB SSD")["ram_gb"] == 24
 
     @pytest.mark.asyncio
     async def test_fanout_dedup_exclude_flag(self, monkeypatch):
@@ -564,3 +565,147 @@ class TestOlxCardsAndFanout:
         monkeypatch.setattr(server, "_olx_search_once", fake)
         r = json.loads(await server.olx_buscar_anuncios(server.BuscarAnunciosInput(query="x")))
         assert r == {"erro": "boom"}
+
+
+class TestMlToken:
+    @staticmethod
+    def _fx(name):
+        from pathlib import Path
+
+        return json.loads((Path(__file__).parent / "fixtures" / name).read_text())
+
+    @pytest.fixture(autouse=True)
+    def _clean(self, monkeypatch):
+        from mcp_brazil_marketplaces import server
+
+        for v in ("ACCESS_TOKEN", "REFRESH_TOKEN", "CLIENT_ID", "CLIENT_SECRET", "TOKEN_FILE"):
+            monkeypatch.delenv(f"MCP_BR_ML_{v}", raising=False)
+        server._ML_TOKEN_STATE.update(access=None, refresh=None, loaded=False)
+        yield
+        server._ML_TOKEN_STATE.update(access=None, refresh=None, loaded=False)
+
+    @pytest.mark.asyncio
+    async def test_no_token_requer_token_without_network(self, monkeypatch):
+        from mcp_brazil_marketplaces import server
+
+        async def boom(*a, **k):
+            raise AssertionError("não deve ir à rede sem token")
+
+        monkeypatch.setattr(server, "_ml_request", boom)
+        r = json.loads(await server.ml_buscar_anuncios(BuscarMLInput(query="macbook")))
+        assert (
+            r["status"] == "requer_token"
+            and r["passos"]
+            and "MCP_BR_ML_ACCESS_TOKEN" in " ".join(r["passos"])
+        )
+        assert "anuncios" not in r
+        d = json.loads(
+            await server.ml_detalhe_anuncio(
+                server.DetalheMLInput(url="https://produto.mercadolivre.com.br/MLB-4567890123-x")
+            )
+        )
+        assert d["status"] == "requer_token"
+
+    @pytest.mark.asyncio
+    async def test_search_maps_spec_over_title(self, monkeypatch):
+        import httpx
+
+        from mcp_brazil_marketplaces import server
+
+        monkeypatch.setenv("MCP_BR_ML_ACCESS_TOKEN", "tok")
+        seen = {}
+
+        async def fake(method, url, **kw):
+            seen.update(kw)
+            return httpx.Response(200, json=self._fx("ml_search.json"))
+
+        monkeypatch.setattr(server, "_ml_request", fake)
+        r = json.loads(
+            await server.ml_buscar_anuncios(
+                BuscarMLInput(query="macbook air", ordenar=OrdenarPor.PRECO_MENOR)
+            )
+        )
+        a = r["anuncios"][0]
+        assert seen["headers"]["Authorization"] == "Bearer tok" and seen["params"]["sort"] == "price_asc"
+        assert a["id"] == 4567890123 and a["preco"] == "R$ 9.777,50" and a["condicao"] == "new"
+        assert (
+            a["ram_gb_spec"] == 16
+            and a["modelo_alfanumerico"] == "MW2U3LL/A"
+            and "spec diz 16GB" in a["aviso_ram"]
+        )
+        assert "_OrderId_PRICE_NoIndex_True" in r["url_busca"]
+
+    @pytest.mark.asyncio
+    async def test_403_is_blocked_not_empty(self, monkeypatch):
+        import httpx
+
+        from mcp_brazil_marketplaces import server
+
+        monkeypatch.setenv("MCP_BR_ML_ACCESS_TOKEN", "tok")
+
+        async def fake(method, url, **kw):
+            return httpx.Response(403, json={"message": "forbidden"})
+
+        monkeypatch.setattr(server, "_ml_request", fake)
+        r = json.loads(await server.ml_buscar_anuncios(BuscarMLInput(query="x")))
+        assert r["status"] == "blocked" and "anuncios" not in r
+
+    @pytest.mark.asyncio
+    async def test_401_refreshes_once_and_persists(self, monkeypatch, tmp_path):
+        import httpx
+
+        from mcp_brazil_marketplaces import server
+
+        tf = tmp_path / "tok.json"
+        monkeypatch.setenv("MCP_BR_ML_ACCESS_TOKEN", "old")
+        monkeypatch.setenv("MCP_BR_ML_REFRESH_TOKEN", "r1")
+        monkeypatch.setenv("MCP_BR_ML_CLIENT_ID", "cid")
+        monkeypatch.setenv("MCP_BR_ML_CLIENT_SECRET", "sec")
+        monkeypatch.setenv("MCP_BR_ML_TOKEN_FILE", str(tf))
+        calls = []
+
+        async def fake(method, url, **kw):
+            calls.append((method, url))
+            if method == "POST":
+                assert kw["data"]["refresh_token"] == "r1"
+                return httpx.Response(200, json={"access_token": "new", "refresh_token": "r2"})
+            if kw["headers"]["Authorization"] == "Bearer old":
+                return httpx.Response(401)
+            return httpx.Response(200, json=self._fx("ml_search.json"))
+
+        monkeypatch.setattr(server, "_ml_request", fake)
+        r = json.loads(await server.ml_buscar_anuncios(BuscarMLInput(query="x")))
+        assert r["status"] == "ok" and [c[0] for c in calls] == ["GET", "POST", "GET"]
+        assert json.loads(tf.read_text()) == {"access_token": "new", "refresh_token": "r2"}
+        assert oct(tf.stat().st_mode)[-3:] == "600"
+
+    @pytest.mark.asyncio
+    async def test_detail(self, monkeypatch):
+        import httpx
+
+        from mcp_brazil_marketplaces import server
+
+        monkeypatch.setenv("MCP_BR_ML_ACCESS_TOKEN", "tok")
+
+        async def fake(method, url, **kw):
+            if url.endswith("/description"):
+                return httpx.Response(200, json={"plain_text": "Unidade importada"})
+            if "/users/" in url:
+                return httpx.Response(
+                    200,
+                    json={
+                        "nickname": "LOJA_EXEMPLO",
+                        "seller_reputation": {"transactions": {"completed": 1200}},
+                    },
+                )
+            return httpx.Response(200, json=self._fx("ml_item.json"))
+
+        monkeypatch.setattr(server, "_ml_request", fake)
+        r = json.loads(
+            await server.ml_detalhe_anuncio(
+                server.DetalheMLInput(url="https://produto.mercadolivre.com.br/MLB-4567890123-x")
+            )
+        )
+        assert r["status"] == "ok" and r["vendedor"] == "LOJA_EXEMPLO" and r["vendedor_vendas"] == 1200
+        assert r["garantia"].startswith("Garantia") and r["descricao"] == "Unidade importada"
+        assert r["modelo_alfanumerico"] == "MW2U3LL/A" and r["imagens"]
