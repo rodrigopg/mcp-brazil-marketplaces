@@ -15,6 +15,7 @@ import re
 import uuid
 from datetime import datetime
 from enum import Enum
+from html import unescape
 from urllib.parse import urlparse
 
 import httpx
@@ -389,6 +390,68 @@ def _extract_next_data(html: str) -> dict:
     if len(blob) > MAX_NEXT_DATA_BYTES:
         raise ValueError(f"Payload __NEXT_DATA__ excede limite ({len(blob)} > {MAX_NEXT_DATA_BYTES} bytes).")
     return json.loads(blob)
+
+
+_INITIAL_DATA_TAG_RE = re.compile(r'<script[^>]{0,3000}id="initial-data"[^>]{0,3000}>')
+_DATA_JSON_RE = re.compile(r'data-json="([^"]*)"')
+_BR_RE = re.compile(r"<br\s*/?>", re.IGNORECASE)
+_TAG_RE = re.compile(r"<[^>]{0,500}>")
+
+
+def _extract_initial_data(html: str) -> dict:
+    """Extrai o `.ad` de `<script id="initial-data" data-json="...">` (páginas de detalhe OLX).
+
+    Mesmas defesas de `_extract_next_data`: cap de HTML, regex linear, cap do blob.
+    """
+    if len(html) > MAX_HTML_BYTES:
+        html = html[:MAX_HTML_BYTES]
+    tag = _INITIAL_DATA_TAG_RE.search(html)
+    attr = _DATA_JSON_RE.search(tag.group(0)) if tag else None
+    if not attr:
+        raise ValueError("initial-data não encontrado na página de detalhe.")
+    blob = unescape(attr.group(1))
+    if len(blob) > MAX_NEXT_DATA_BYTES:
+        raise ValueError(f"Payload initial-data excede limite ({len(blob)} > {MAX_NEXT_DATA_BYTES} bytes).")
+    ad = _safe_dict(json.loads(blob)).get("ad")
+    if not isinstance(ad, dict) or not ad:
+        raise ValueError("initial-data sem campo 'ad'.")
+    return ad
+
+
+def _parse_olx_ad(ad: dict, url: str) -> dict:
+    """Normaliza o `.ad` do initial-data. Campos crus e descrição ficam separados
+    (anúncios se contradizem — o caller compara)."""
+    loc = _safe_dict(ad.get("location"))
+    body = _TAG_RE.sub("", _BR_RE.sub("\n", _safe_str(ad.get("body"), 20000) or "")).strip()
+    props = [
+        {"nome": _safe_str(_safe_dict(x).get("name")), "valor": _safe_str(_safe_dict(x).get("value"))}
+        for x in _safe_list(ad.get("properties"))[:_PROPS_MAX]
+    ]
+    imgs = [
+        _safe_str(_safe_dict(i).get("original"))
+        for i in _safe_list(ad.get("images"))[:_LIST_MAX]
+        if _safe_str(_safe_dict(i).get("original"))
+    ]
+    ts = ad.get("origListTime")
+    return {
+        "fonte": "olx",
+        "status": "ok",
+        "id": ad.get("listId"),
+        "titulo": _safe_str(ad.get("subject")),
+        "preco": _safe_str(ad.get("priceValue")),
+        "preco_antigo": _safe_str(ad.get("oldPrice")),
+        "descricao": body,
+        "estado": _safe_str(loc.get("uf")),
+        "municipio": _safe_str(loc.get("municipality")),
+        "bairro": _safe_str(loc.get("neighbourhood")),
+        "vendedor": _safe_str(_safe_dict(ad.get("user")).get("name")),
+        "profissional": bool(ad.get("professionalAd")),
+        "data": _format_timestamp(ts) if isinstance(ts, int) else None,
+        "imagens": imgs,
+        "propriedades_raw": props,
+        "propriedades": {p["nome"]: p["valor"] for p in props if p["nome"]},
+        "url": url,
+    }
 
 
 def _format_timestamp(ts: int) -> str:
@@ -834,7 +897,9 @@ async def olx_detalhe_anuncio(params: DetalheAnuncioInput) -> str:
     used_jina = False
     try:
         html = await _fetch_with_evasion(params.url)
-    except Exception:
+    except Exception as e0:
+        if isinstance(e0, httpx.HTTPStatusError) and e0.response.status_code == 410:
+            return json.dumps({"fonte": "olx", "status": "removido", "url": params.url}, ensure_ascii=False)
         if DISABLE_JINA:
             return json.dumps(
                 {"erro": "Erro: acesso negado e fallback Jina desabilitado (MCP_BR_DISABLE_JINA=1)."},
@@ -870,74 +935,63 @@ async def olx_detalhe_anuncio(params: DetalheAnuncioInput) -> str:
             return json.dumps({"erro": f"Falha ao parsear markdown (id={err_id})."}, ensure_ascii=False)
 
     try:
-        # Extrai JSON de rastreamento embarcado no dataLayer (mais consistente para detalhes)
-        ad_data: dict = {}
-
-        # Tenta via __NEXT_DATA__
-        try:
-            data = _extract_next_data(html)
-            props = data.get("props", {}).get("pageProps", {})
-            ad_data = props.get("ad", props.get("adData", {}))
-        except ValueError:
-            pass
-
-        # Fallback: extrai diretamente do blob de tracking embarcado na página
-        if not ad_data:
-            m = re.search(r'"adId":(\d+).*?"subject":"([^"]+)"', html)
-            if not m:
-                return json.dumps({"erro": "Não foi possível extrair dados do anúncio."}, ensure_ascii=False)
-
-        # Extrai campos individuais com regex como complemento
-        def _re(pattern: str, default: str = "") -> str:
-            match = re.search(pattern, html)
-            return match.group(1) if match else default
-
-        list_id = _re(r'"listId":(\d+)')
-        subject = _re(r'"subject":"([^"]+)"')
-        description_raw = _re(r'"description":"([^"]{10,})"')
-        description = re.sub(r"<[^>]+>", " ", description_raw).strip()
-        price = _re(r'"price":"([^"]+)"')
-        seller = _re(r'"sellerName":"([^"]+)"')
-        state = _re(r'"state":"([A-Z]{2})"')
-        municipality = _re(r'"municipality":"([^"]+)"')
-        neighbourhood = _re(r'"neighbourhood":"([^"]+)"')
-        main_category = _re(r'"mainCategory":"([^"]+)"')
-        sub_category = _re(r'"subCategory":"([^"]+)"')
-        ad_date_str = _re(r'"adDate":"([^"]+)"')
-        professional = '"professionalAd":"1"' in html or '"professionalAd":true' in html
-
-        # Imagens: coleta URLs únicas de alta resolução
-        imgs_raw = re.findall(r'https://img\.olx\.com\.br/images/[^\s"\'&]+\.jpg', html)
-        imgs = list(dict.fromkeys(imgs_raw))  # dedup mantendo ordem
-
-        # Propriedades específicas da categoria
-        props_matches = re.findall(r'"label":"([^"]+)","value":"([^"]+)"', html)
-        propriedades = {label: value for label, value in props_matches if label not in ("Categoria",)}
-
-        result = {
-            "id": int(list_id) if list_id else None,
-            "titulo": subject,
-            "descricao": description,
-            "preco": f"R$ {price}" if price and not price.startswith("R") else price,
-            "categoria": main_category,
-            "subcategoria": sub_category,
-            "estado": state,
-            "municipio": municipality,
-            "bairro": neighbourhood,
-            "vendedor": seller,
-            "profissional": professional,
-            "data": ad_date_str,
-            "imagens": imgs[:10],
-            "propriedades": propriedades,
-            "url": params.url,
-            "fonte": "olx",
-        }
-        return json.dumps(result, ensure_ascii=False, indent=2)
-
+        ad = _extract_initial_data(html)
+        return json.dumps(_parse_olx_ad(ad, params.url), ensure_ascii=False, indent=2)
+    except ValueError as e:
+        return json.dumps({"erro": f"Não foi possível extrair dados do anúncio: {e}"}, ensure_ascii=False)
     except Exception as e:
         err_id = uuid.uuid4().hex[:8]
         logger.exception("Falha ao processar anúncio [%s]: %s", err_id, e)
         return json.dumps({"erro": f"Falha ao processar anúncio (id={err_id})."}, ensure_ascii=False)
+
+
+class VerificarAnunciosInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, validate_assignment=True, extra="forbid")
+
+    urls: list[str] = Field(
+        ..., description="URLs de anúncios OLX a verificar (máx 20).", min_length=1, max_length=20
+    )
+
+
+async def _olx_liveness(url: str) -> dict:
+    """Status de um anúncio: ativo | removido (404/410) | blocked (403/429/503) | erro. Sem evasão."""
+    try:
+        _validar_url_olx(url)
+    except ValueError as e:
+        return {"url": url, "status": "erro", "erro": str(e)}
+    try:
+        async with _RateGate(url):
+            async with httpx.AsyncClient(follow_redirects=True, timeout=REQUEST_TIMEOUT, http2=HTTP2) as c:
+                code = (await c.get(url, headers={"User-Agent": "mcp-brazil-marketplaces"})).status_code
+    except (httpx.TimeoutException, httpx.TransportError):
+        return {"url": url, "status": "erro", "erro": "timeout/rede"}
+    if code in (404, 410):
+        return {"url": url, "status": "removido"}
+    if code in (403, 429, 503):
+        return {
+            "url": url,
+            "status": "blocked",
+            "dica": "OLX bloqueou a checagem; abra a URL no navegador ou use olx_detalhe_anuncio.",
+        }
+    return {"url": url, "status": "ativo" if code == 200 else "erro", "http": code}
+
+
+@mcp.tool(
+    name="olx_verificar_anuncios",
+    annotations={
+        "title": "Verificar se anúncios OLX continuam no ar",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True,
+    },
+)
+async def olx_verificar_anuncios(params: VerificarAnunciosInput) -> str:
+    """Checa em lote se URLs de anúncios OLX ainda estão ativas (ativo/removido/blocked)."""
+    results = await asyncio.gather(*[_olx_liveness(u) for u in params.urls])
+    return json.dumps(
+        {"fonte": "olx", "total": len(results), "anuncios": results}, ensure_ascii=False, indent=2
+    )
 
 
 # ---------------------------------------------------------------------------

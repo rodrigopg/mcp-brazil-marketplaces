@@ -20,7 +20,7 @@ Arquivo único em `mcp_brazil_marketplaces/server.py` (~940 linhas). Ordem das s
 14. **Fetchers** — `_fetch_with_evasion` (OLX, warm-up + retry + perfis), `_fetch_via_jina` (proxy fallback), `_fetch_with_retries` (genérico ML)
 15. **Error handler** — `_handle_http_error` com correlation ID via `uuid.uuid4().hex[:8]`
 16. **Parsers** — `_parse_ml_html`, `_parse_search_markdown`
-17. **Tools** — `@mcp.tool` decorados: `olx_buscar_anuncios`, `olx_detalhe_anuncio`, `ml_buscar_anuncios`, `ml_detalhe_anuncio`
+17. **Tools** — `@mcp.tool` decorados: `olx_buscar_anuncios`, `olx_detalhe_anuncio`, `olx_verificar_anuncios`, `ml_buscar_anuncios`, `ml_detalhe_anuncio`
 18. **`def main()` + `if __name__ == "__main__"`**
 
 ## Padrão de tool

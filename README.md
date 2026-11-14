@@ -61,7 +61,7 @@ Se preferir `pip` em vez de `uvx`:
 }
 ```
 
-Reinicie o Claude Desktop. As ferramentas `olx_buscar_anuncios`, `olx_detalhe_anuncio` e `ml_buscar_anuncios` ficam disponíveis.
+Reinicie o Claude Desktop. As ferramentas `olx_buscar_anuncios`, `olx_detalhe_anuncio`, `olx_verificar_anuncios` e `ml_buscar_anuncios` ficam disponíveis.
 
 ## Configuração no Claude Code / Cursor / Continue
 

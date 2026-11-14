@@ -8,6 +8,8 @@ e este projeto adere a [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 ## [Unreleased]
 
 ### Added
+- `olx_detalhe_anuncio` lê `<script id="initial-data">` (`.ad`) em vez de regex; descrição e campos crus (`propriedades_raw`) separados, `preco_antigo` exposto; é a fonte de verdade do preço (#75).
+- HTTP 410 vira `{"status":"removido"}`; nova tool `olx_verificar_anuncios` checa em lote (ativo/removido/blocked) sem evasão (#75).
 - Branch protection nativa na `main` com PR obrigatório + CI verde (5 status checks).
 - Badges no README (PyPI version, Python versions, downloads, CI, license, ruff).
 - Este `CHANGELOG.md`.
