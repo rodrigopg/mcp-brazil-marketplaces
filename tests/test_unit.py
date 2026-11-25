@@ -709,3 +709,83 @@ class TestMlToken:
         assert r["status"] == "ok" and r["vendedor"] == "LOJA_EXEMPLO" and r["vendedor_vendas"] == 1200
         assert r["garantia"].startswith("Garantia") and r["descricao"] == "Unidade importada"
         assert r["modelo_alfanumerico"] == "MW2U3LL/A" and r["imagens"]
+
+
+class TestAgregador:
+    @staticmethod
+    def _fx(name):
+        from pathlib import Path
+
+        return (Path(__file__).parent / "fixtures" / name).read_text()
+
+    def test_specs_ssd_after_word(self):
+        from mcp_brazil_marketplaces.server import _extract_specs
+
+        assert _extract_specs('Macbook Air Apple M4 13,6" 24GB SSD 512GB MacOS') == {
+            "chip": "M4",
+            "ssd_gb": 512,
+            "ram_gb": 24,
+        }
+        assert _extract_specs("256GB SSD 16GB RAM") == {"ssd_gb": 256, "ram_gb": 16}
+
+    @pytest.mark.asyncio
+    async def test_search_offers_flag_mismatch_and_dedup(self, monkeypatch):
+        from mcp_brazil_marketplaces import server
+
+        async def fake(url, fonte):
+            return "ok", self._fx("zoom_busca.html" if "/search" in url else "zoom_produto.html")
+
+        monkeypatch.setattr(server, "_agg_get", fake)
+        r = json.loads(
+            await server.agregador_buscar_ofertas(
+                server.BuscarOfertasInput(query="macbook air m4", limite_produtos=1)
+            )
+        )
+        assert r["status"] == "ok" and r["fonte"] == "zoom"
+        p = r["produtos"][0]
+        assert p["preco_catalogo"] == "R$ 9.777,77" and p["url"].startswith(
+            "https://www.zoom.com.br/notebook/"
+        )
+        magalu = next(o for o in p["ofertas"] if o["loja"] == "Magazine Luiza")
+        assert magalu["titulo_divergente"] and "chip: catálogo M4, oferta M2" in magalu["avisos"]
+        assert "Chip M2" in magalu["nome_oferta"]  # nome da oferta ao lado do catálogo
+        assert [o["loja"] for o in p["ofertas"]] == ["Magazine Luiza", "Amazon"]  # Amazon 2x -> 1, por preço
+
+    @pytest.mark.asyncio
+    async def test_price_filter(self, monkeypatch):
+        from mcp_brazil_marketplaces import server
+
+        async def fake(url, fonte):
+            return "ok", self._fx("zoom_busca.html" if "/search" in url else "zoom_produto.html")
+
+        monkeypatch.setattr(server, "_agg_get", fake)
+        r = json.loads(
+            await server.agregador_buscar_ofertas(
+                server.BuscarOfertasInput(query="m", preco_min=12000, limite_produtos=5)
+            )
+        )
+        assert all(p["preco_catalogo"] != "R$ 9.777,77" for p in r["produtos"])
+
+    @pytest.mark.asyncio
+    async def test_blocked_is_status_not_empty(self, monkeypatch):
+        from mcp_brazil_marketplaces import server
+
+        async def fake(url, fonte):
+            return "blocked", None
+
+        monkeypatch.setattr(server, "_agg_get", fake)
+        r = json.loads(
+            await server.agregador_buscar_ofertas(server.BuscarOfertasInput(query="x", fonte="buscape"))
+        )
+        assert r["status"] == "blocked" and r["fonte"] == "buscape" and "produtos" not in r
+
+    @pytest.mark.asyncio
+    async def test_layout_change(self, monkeypatch):
+        from mcp_brazil_marketplaces import server
+
+        async def fake(url, fonte):
+            return "ok", "<html></html>"
+
+        monkeypatch.setattr(server, "_agg_get", fake)
+        r = json.loads(await server.agregador_buscar_ofertas(server.BuscarOfertasInput(query="x")))
+        assert r["status"] == "layout"
