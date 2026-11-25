@@ -1,0 +1,50 @@
+{
+ "paging": {
+  "total": 1
+ },
+ "results": [
+  {
+   "id": "MLB4567890123",
+   "title": "Apple MacBook Air M2 24GB 256GB SSD",
+   "price": 9777.5,
+   "condition": "new",
+   "permalink": "https://produto.mercadolivre.com.br/MLB-4567890123-macbook",
+   "thumbnail": "https://http2.mlstatic.com/D_1.jpg",
+   "sold_quantity": 42,
+   "seller_id": 99,
+   "seller": {
+    "nickname": "LOJA_EXEMPLO"
+   },
+   "shipping": {
+    "free_shipping": true
+   },
+   "address": {
+    "city_name": "São Paulo",
+    "state_name": "São Paulo"
+   },
+   "warranty": "Garantia do vendedor: 90 dias",
+   "attributes": [
+    {
+     "id": "BRAND",
+     "name": "Marca",
+     "value_name": "Apple"
+    },
+    {
+     "id": "RAM_MEMORY",
+     "name": "Capacidade total do módulo de memória RAM",
+     "value_name": "16 GB"
+    },
+    {
+     "id": "ALPHANUMERIC_MODEL",
+     "name": "Modelo alfanumérico",
+     "value_name": "MW2U3LL/A"
+    }
+   ],
+   "pictures": [
+    {
+     "secure_url": "https://http2.mlstatic.com/D_NQ_NP_1.jpg"
+    }
+   ]
+  }
+ ]
+}

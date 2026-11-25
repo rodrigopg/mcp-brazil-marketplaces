@@ -96,6 +96,8 @@ Busca anúncios na OLX com filtros.
 | `ordenar` | string | Não | `relevance` \| `price` \| `date` |
 | `pagina` | int | Não | Página (1–50) |
 
+> **Mercado Livre exige token OAuth** (`MCP_BR_ML_ACCESS_TOKEN`; app em developers.mercadolivre.com.br). Sem token as tools ML retornam `status: requer_token` com os passos.
+
 ### `olx_detalhe_anuncio`
 
 Retorna detalhes completos de um anúncio da OLX pela URL.
