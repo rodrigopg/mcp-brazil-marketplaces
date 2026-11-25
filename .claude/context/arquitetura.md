@@ -34,6 +34,10 @@ Toda tool:
 - Adiciona campo `fonte` (`olx` | `olx_jina` | `ml`) no envelope e em cada anúncio
 - Retorna `json.dumps(result, ensure_ascii=False, indent=2)`
 
+## Status por fonte
+
+Toda resposta (sucesso ou erro) traz `fonte` e `status`: `ok | blocked | requer_token | removido | layout | erro` (+ `parcial` no fan-out OLX). Erros: `_erro(msg, fonte, status)`; exceções de rede: `_status_of(e)`. Bloqueio nunca vira "0 resultados" nem dispara evasão nova: devolve `blocked` + a rota legítima (navegador, agregador, token).
+
 ## Schema unificado de anúncio
 
 Campos comuns OLX + ML: `fonte`, `id`, `titulo`, `preco`, `localizacao`, `data`, `url`, `imagem`.
