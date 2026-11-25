@@ -436,3 +436,71 @@ class TestSchemaConsistency:
     def test_ml_url_signature(self):
         out = _build_ml_url(BuscarMLInput(query="x"))
         assert isinstance(out, tuple) and len(out) == 2
+
+
+class TestOlxInitialData:
+    def _html(self):
+        from pathlib import Path
+
+        return (Path(__file__).parent / "fixtures" / "olx_detalhe.html").read_text()
+
+    def test_parse_fixture(self):
+        from mcp_brazil_marketplaces.server import _extract_initial_data, _parse_olx_ad
+
+        r = _parse_olx_ad(_extract_initial_data(self._html()), "https://go.olx.com.br/x")
+        assert r["status"] == "ok" and r["preco"] == "R$ 6.650" and r["preco_antigo"] == "R$ 7.399"
+        assert r["descricao"] == "MacBook Air M4 ?13.3? 16/256\nRAM 24GB"
+        assert r["propriedades"]["Modelo do Processador"] == "Apple M3"  # título diz M4: exposto cru
+        assert r["municipio"] == "Aparecida de Goiânia" and r["estado"] == "GO" and r["profissional"]
+        assert r["imagens"] == ["https://img.olx.com.br/images/28/287590441934028.jpg"]
+
+    def test_missing_initial_data_raises(self):
+        from mcp_brazil_marketplaces.server import _extract_initial_data
+
+        with pytest.raises(ValueError):
+            _extract_initial_data("<html></html>")
+
+
+class TestOlxRemovido:
+    @pytest.mark.asyncio
+    async def test_detalhe_410(self, monkeypatch):
+        import httpx
+
+        from mcp_brazil_marketplaces import server
+
+        async def fake(url, referer_override=None):
+            req = httpx.Request("GET", url)
+            raise httpx.HTTPStatusError("gone", request=req, response=httpx.Response(410, request=req))
+
+        monkeypatch.setattr(server, "_fetch_with_evasion", fake)
+        url = "https://go.olx.com.br/goias/informatica/notebooks/x-1234567890"
+        r = json.loads(await olx_detalhe_anuncio(DetalheAnuncioInput(url=url)))
+        assert r == {"fonte": "olx", "status": "removido", "url": url}
+
+    @pytest.mark.asyncio
+    async def test_liveness_statuses(self, monkeypatch):
+        import httpx
+
+        from mcp_brazil_marketplaces import server
+
+        codes = {"a": 200, "b": 410, "c": 403}
+
+        class FakeClient:
+            def __init__(self, *a, **k):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def get(self, url, headers=None):
+                return httpx.Response(codes[url.split("/")[-1]])
+
+        monkeypatch.setattr(server.httpx, "AsyncClient", FakeClient)
+        monkeypatch.setattr(server, "RATE_LIMIT_MIN_GAP", 0.0)
+        urls = [f"https://go.olx.com.br/x/{k}" for k in codes]
+        r = json.loads(await server.olx_verificar_anuncios(server.VerificarAnunciosInput(urls=urls)))
+        assert [a["status"] for a in r["anuncios"]] == ["ativo", "removido", "blocked"]
+        assert "dica" in r["anuncios"][2]
